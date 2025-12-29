@@ -1,5 +1,5 @@
 🍽️ Singapore Restaurant Finder (Let Him Cook!)
-
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://lethimcook-duvafpd6cmjx72g9kejply.streamlit.app)
 
 📍 Find Food Near You: Enter any Singapore address or area (like "Orchard Road" or "Chinatown").
 
