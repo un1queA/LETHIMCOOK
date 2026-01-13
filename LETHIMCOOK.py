@@ -44,64 +44,85 @@ def calculate_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> fl
     return round(6371 * 2 * asin(sqrt(a)), 2)
 
 def search_foursquare(lat: float, lon: float, radius_m: int, search_term: str, api_key: str) -> List[Dict]:
-    """Foursquare Places API (Current API)"""
+    """Foursquare Places API (Current API) with refined filters."""
     if not api_key or not api_key.strip():
         return []
-    
+
     try:
-        # CORRECTED: Current Foursquare Places API endpoint
         url = "https://places-api.foursquare.com/places/search"
-        
-        # CORRECTED: Headers for current API
+
         headers = {
             "Accept": "application/json",
             "Authorization": f"Bearer {api_key.strip()}",  # Must include 'Bearer'
             "X-Places-Api-Version": "2025-06-17"  # REQUIRED header
         }
-        
+
+        # ========== REFINEMENT 1: SPECIFIC CATEGORY FILTER ==========
+        # A curated list of specific food & drink venue categories for Singapore.
+        # This EXCLUDES broad categories like 'Food Court' (13099) or 'Metro Station' (transport categories).
+        category_list = (
+            '13065,13145,13314,13236,13066,13068,13070,13071,13072,13073,13076,13077,13079,13080,'
+            '13081,13082,13083,13084,13085,13086,13087,13088,13089,13090,13091,13092,13093,13094,'
+            '13095,13096,13097,13144,13146,13147,13148,13149,13150,13151,13152,13153,13154,13155'
+        )
+        # Categories include: Restaurant, Hawker Centre, Noodle House, Indian Restaurant,
+        # Chinese Restaurant, Japanese Restaurant, etc.
+
         params = {
             'll': f"{lat},{lon}",
             'radius': min(radius_m, 100000),
-            'categories': '13065',  # Restaurant category
+            'categories': category_list,  # Use the refined, specific list
             'limit': 50,
-            'sort': 'DISTANCE'
+            'sort': 'POPULARITY'  # Prioritize well-regarded spots
         }
-        
+
         if search_term and search_term.strip():
             params['query'] = search_term
-        
+
         r = requests.get(url, headers=headers, params=params, timeout=15)
-        
+
         if r.status_code != 200:
             st.error(f"Foursquare API Error: {r.status_code}")
             if r.text:
                 st.error(f"Response: {r.text[:300]}")
             return []
-        
+
         r.raise_for_status()
         data = r.json()
-        
+
         results = []
         for place in data.get('results', []):
-            # CORRECTED: Extract coordinates from new response structure
+            # Extract coordinates from new response structure
             r_lat = place.get('latitude')
             r_lon = place.get('longitude')
-            
+
             if r_lat and r_lon:
-                # Calculate distance and filter by radius
+                # Calculate distance and enforce radius filter
                 distance = calculate_distance(lat, lon, r_lat, r_lon)
                 if distance > (radius_m / 1000):
                     continue
-                
-                # CORRECTED: Get categories from new structure
+
+                # Get categories and cuisine
                 categories = place.get('categories', [])
                 cuisine_list = [cat.get('name', '') for cat in categories]
                 cuisine = ', '.join(cuisine_list) if cuisine_list else 'Restaurant'
-                
-                # CORRECTED: Get address from new structure
+
+                # Get address
                 location = place.get('location', {})
                 address = location.get('formatted_address', 'N/A')
-                
+
+                # ========== REFINEMENT 2: LOCAL CUISINE/NAME MATCH ==========
+                # Apply an extra filter if the user searched for a specific cuisine/food.
+                if search_term and search_term.strip():
+                    search_lower = search_term.lower()
+                    venue_cuisine_lower = cuisine.lower()
+                    venue_name_lower = place.get('name', '').lower()
+
+                    # Skip this venue if the search term is NOT found in EITHER its name or its listed cuisine.
+                    # This catches stalls selling different foods under a generic "Food" category.
+                    if (search_lower not in venue_cuisine_lower) and (search_lower not in venue_name_lower):
+                        continue  # This venue is irrelevant to the user's request
+
                 results.append({
                     'name': place.get('name', 'Unnamed'),
                     'lat': r_lat,
@@ -115,7 +136,7 @@ def search_foursquare(lat: float, lon: float, radius_m: int, search_term: str, a
                     'distance': distance,
                     'source': 'foursquare'
                 })
-        
+
         return results
     except requests.exceptions.RequestException as e:
         st.error(f"Foursquare network error: {str(e)[:200]}")
@@ -367,7 +388,7 @@ def create_map(user_lat: float, user_lon: float, restaurants: List[Dict], select
     return m
 
 # Main UI
-st.markdown('<h1 class="main-header">🍽️ Singapore Restaurant Finder<br><small>Hybrid Multi-API (Updated)</small></h1>', unsafe_allow_html=True)
+st.markdown('<h1 class="main-header">🍽️ Singapore Restaurant Finder<br><small>Hybrid Multi-API with Refined Filters</small></h1>', unsafe_allow_html=True)
 
 with st.sidebar:
     st.header("🔑 API Keys")
@@ -627,24 +648,27 @@ if st.session_state.searched:
 
 else:
     st.info("""
-    👋 **Singapore Restaurant Finder - Updated with Current Foursquare API**
+    👋 **Singapore Restaurant Finder - Enhanced with Smart Filters**
     
-    **✅ CORRECTED API CONFIGURATION:**
-    - ✅ Now uses the **current Foursquare Places API** (not deprecated v3)
-    - ✅ Uses correct endpoint: `https://places-api.foursquare.com/places/search`
-    - ✅ Uses correct headers with 'Bearer' prefix and version header
-    - ✅ Radius properly enforced (all results within km)
-    - ✅ NO cap on results (shows ALL restaurants)
-    - ✅ OpenStreetMap ALWAYS runs
+    **✅ IMPROVED ACCURACY FEATURES:**
+    - ✅ **Refined Category Filtering**: Uses 30+ specific food categories (not just generic "restaurant")
+    - ✅ **Cuisine Match Enforcement**: Results must match your search term in name OR cuisine
+    - ✅ **Popularity Sorting**: Shows well-regarded spots first, not just closest
+    - ✅ **Vague Place Removal**: Excludes metro stations, generic food courts, transport hubs
+    
+    **Key Improvements:**
+    1. **Better Targeting**: Searches specific eatery types like "Hawker Centre", "Noodle House", "Indian Restaurant"
+    2. **Relevance Check**: If you search "chicken rice", results must contain "chicken rice" in name/cuisine
+    3. **Quality First**: Shows popular, established restaurants before obscure stalls
     
     **Your working Foursquare API Key is pre-loaded!**
     
     **How It Works:**
-    1. Searches **Current Foursquare Places API** (hawkers, kopitiams)
+    1. Searches **Current Foursquare Places API** (with smart filters)
     2. Searches Google Places (mainstream restaurants)
     3. Searches OpenStreetMap (base coverage)
     4. Combines & deduplicates results
-    5. Shows ONLY restaurants within your radius
+    5. Shows ONLY relevant restaurants within your radius
     
     **API Coverage for Singapore:**
     - OpenStreetMap: 40-50% (FREE)
@@ -667,4 +691,4 @@ else:
         st.info("📍 Orchard\n🍝 Italian\n📏 5 km")
 
 st.markdown("---")
-st.markdown('<div style="text-align:center;color:#666;"><p>Hybrid Multi-API System (Current Foursquare API)</p><p>Foursquare Places API + Google Places + OpenStreetMap</p><p>✅ Correct API Endpoint • ✅ Correct Headers • ✅ Radius enforced • ✅ No cap</p></div>', unsafe_allow_html=True)
+st.markdown('<div style="text-align:center;color:#666;"><p>Hybrid Multi-API System with Smart Filters</p><p>Foursquare Places API + Google Places + OpenStreetMap</p><p>✅ Accurate Categories • ✅ Cuisine Matching • ✅ Popularity Sorting • ✅ No Vague Results</p></div>', unsafe_allow_html=True)
