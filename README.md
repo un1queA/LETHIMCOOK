@@ -1,4 +1,4 @@
-# 🍽️ Singapore Restaurant Finder (Let Him Cook!)
+
 
 [![Streamlit App])](https://lethimcook-duvafpd6cmjx72g9kejply.streamlit.app)
 
@@ -33,14 +33,14 @@ Everything is displayed on a Folium/OpenStreetMap map and in a sortable sidebar 
 Clicking "Directions" simply opens a pre-filled Google Maps URL with your start and end points.
 
 
-# ⚠️ Honest Limitations (A Reality Check)
-This is a proof of concept. Its accuracy is directly tied to the sometimes-messy data from its free sources.
+# Limitations
+This is a proof of concept. Its accuracy is directly tied to the api data from googleplaces, foursquare and openstreetmap.
 
-APIs sometimes list coffee shops, food courts, or bakeries as "restaurants." We show what they give us.
+All results are taken from the APIs and sometimes they list coffee shops, food courts, or bakeries as "restaurants."
 
 Menu Gaps: Just because a place has spaghetti doesn't mean Google or Foursquare's data knows about it. Dish searches are good, but not 100% perfect.
 
-The Paid Stuff: For truly comprehensive, real-time menu data in Singapore, you'd want APIs from Grab or Apify. Those cost real money, which I dont want to spend XD
+The Paid Stuff: For truly comprehensive, real-time menu data for a specific country like for example Singapore, getting a specific and local APIs from something like Grab or Apify would let you get more accuarte results. However, since this IS a proof of concept and those cost real money, I am sticking to free alternatives for now XD.
 
 OpenStreetMap's Strength: It's fantastic for finding places tagged with a specific cuisine type (like "cuisine":"chinese"), which is why it's a crucial part of our hybrid approach.
 
@@ -108,7 +108,7 @@ Step 4: Get API Key (30 seconds)
 
 Your project opens automatically
 You'll see your API Key displayed
-It starts with: fsq... (example: fsqAbC123XyZ...)
+It starts with: fsq... (example: AbC123XyZ...)
 Click "Copy" or manually copy it
 
 
