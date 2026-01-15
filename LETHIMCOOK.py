@@ -6,7 +6,7 @@ from typing import List, Dict, Tuple, Set
 import time
 from folium import plugins
 
-st.set_page_config(page_title="Restaurant Finder - Singapore", page_icon="🍽️", layout="wide")
+st.set_page_config(page_title="LETHIMCOOK", page_icon="🍽️", layout="wide")
 
 # Session state
 for key in ['searched', 'restaurants', 'user_lat', 'user_lon', 'display_name', 'selected_restaurant', 'api_calls', 'last_search_stats']:
@@ -388,12 +388,12 @@ def create_map(user_lat: float, user_lon: float, restaurants: List[Dict], select
     return m
 
 # Main UI
-st.markdown('<h1 class="main-header">🍽️ Singapore Restaurant Finder<br><small>Hybrid Multi-API with Refined Filters</small></h1>', unsafe_allow_html=True)
+st.markdown('<h1 class="main-header">🍽️ LETHIMCOOK<br><small>Cooking up restaurant/food recommendations</small></h1>', unsafe_allow_html=True)
 
 with st.sidebar:
     st.header("🔑 API Keys")
     
-    st.info("💡 **Use multiple APIs for best coverage!**")
+    st.info("💡 **Use multiple APIs for best results!**")
     
     fs_key = st.text_input("Foursquare API Key", type="password", 
                           value="VUKP54231AII5PDZLZRFZ0SBLX5U25FARAWRKSMA1OFO5GYV",
@@ -450,45 +450,19 @@ with st.sidebar:
                 except Exception as e:
                     st.error(f"Connection error: {str(e)}")
     
-    with st.expander("📖 How to Get CORRECT Foursquare API Key"):
-        st.markdown("""
-        **✅ You already have a working key!**
-        
-        **Your working key is:**
-        ```
-        VUKP54231AII5PDZLZRFZ0SBLX5U25FARAWRKSMA1OFO5GYV
-        ```
-        
-        **This is a valid Service API Key for the current Foursquare Places API.**
-        
-        **Key details:**
-        - ✅ Works with the current Places API
-        - ✅ Requires 'Bearer' prefix in Authorization header
-        - ✅ Must include 'X-Places-Api-Version: 2025-06-17' header
-        
-        **The app is now configured to use the correct API endpoint and headers.**
-        """)
+
     
-    if fs_key or g_key:
-        st.success("✅ Keys entered!")
-        if fs_key:
-            st.caption(f"Foursquare: {st.session_state.api_calls['foursquare']}/2000")
-        if g_key:
-            st.caption(f"Google: {st.session_state.api_calls['google']}")
-        st.caption(f"OSM: {st.session_state.api_calls['osm']} (always free)")
-    else:
-        st.warning("⚠️ No API keys - using OpenStreetMap only")
-    
+
     st.divider()
     st.header("🔍 Search")
     
-    address = st.text_input("📍 Location in Singapore", placeholder="Chinatown, Orchard Road, etc.")
-    search_term = st.text_input("🍜 Cuisine/Food", placeholder="Chicken Rice, Italian, etc.")
+    address = st.text_input("📍 Location")
+    search_term = st.text_input("🍜 Cuisine/Food")
     radius = st.slider("📏 Radius (km)", 1, 10, 3, 1)
     
     st.caption(f"⚠️ Will show ALL restaurants within {radius} km")
     
-    search_btn = st.button("🔍 Find Restaurants", use_container_width=True)
+    search_btn = st.button("Cook! 👨‍🍳", use_container_width=True)
     
     if st.session_state.searched and st.button("🗑️ Clear", use_container_width=True):
         st.session_state.searched = False
@@ -541,7 +515,7 @@ if st.session_state.searched:
             with col4:
                 st.metric("Duplicates", stats['duplicates'])
             
-            st.caption(f"✅ All results are within {st.session_state.get('search_radius', 3)} km radius")
+            st.caption(f"✅ All results are within {radius} km radius")
     
     if st.session_state.restaurants:
         col1, col2 = st.columns([2, 1])
@@ -647,48 +621,8 @@ if st.session_state.searched:
                         st.write(f"**🕐 Hours:** {r['opening_hours']}")
 
 else:
-    st.info("""
-    👋 **Singapore Restaurant Finder - Enhanced with Smart Filters**
-    
-    **✅ IMPROVED ACCURACY FEATURES:**
-    - ✅ **Refined Category Filtering**: Uses 30+ specific food categories (not just generic "restaurant")
-    - ✅ **Cuisine Match Enforcement**: Results must match your search term in name OR cuisine
-    - ✅ **Popularity Sorting**: Shows well-regarded spots first, not just closest
-    - ✅ **Vague Place Removal**: Excludes metro stations, generic food courts, transport hubs
-    
-    **Key Improvements:**
-    1. **Better Targeting**: Searches specific eatery types like "Hawker Centre", "Noodle House", "Indian Restaurant"
-    2. **Relevance Check**: If you search "chicken rice", results must contain "chicken rice" in name/cuisine
-    3. **Quality First**: Shows popular, established restaurants before obscure stalls
-    
-    **Your working Foursquare API Key is pre-loaded!**
-    
-    **How It Works:**
-    1. Searches **Current Foursquare Places API** (with smart filters)
-    2. Searches Google Places (mainstream restaurants)
-    3. Searches OpenStreetMap (base coverage)
-    4. Combines & deduplicates results
-    5. Shows ONLY relevant restaurants within your radius
-    
-    **API Coverage for Singapore:**
-    - OpenStreetMap: 40-50% (FREE)
-    - Foursquare Places API: 55-65% (FREE 2,000/day)
-    - Google Places: 60-70% (Paid)
-    - **HYBRID All 3: 75-85%** ⭐
-    
-    **Best FREE Setup:**
-    - Foursquare + OpenStreetMap = 65-75% coverage
-    - No Google needed for POC!
-    """)
-    
-    st.subheader("🍜 Example Searches:")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.info("📍 Chinatown\n🍗 Chicken Rice\n📏 3 km")
-    with c2:
-        st.info("📍 Bugis\n🍜 Laksa\n📏 2 km")
-    with c3:
-        st.info("📍 Orchard\n🍝 Italian\n📏 5 km")
 
-st.markdown("---")
-st.markdown('<div style="text-align:center;color:#666;"><p>Hybrid Multi-API System with Smart Filters</p><p>Foursquare Places API + Google Places + OpenStreetMap</p><p>✅ Accurate Categories • ✅ Cuisine Matching • ✅ Popularity Sorting • ✅ No Vague Results</p></div>', unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.markdown('<div style="text-align:center;color:#666;"><p>Hybrid Multi-API System with Smart Filters</p><p>Foursquare Places API + Google Places + OpenStreetMap</p></p></div>', unsafe_allow_html=True)
+
