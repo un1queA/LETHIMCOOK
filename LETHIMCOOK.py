@@ -388,7 +388,7 @@ def create_map(user_lat: float, user_lon: float, restaurants: List[Dict], select
     return m
 
 # Main UI
-st.markdown('<h1 class="main-header">🍽️ LETHIMCOOK<br><small>Cooking up restaurant/food recommendations</small></h1>', unsafe_allow_html=True)
+st.markdown('<h1 class="main-header">🍽️ LETHIMCOOK<br><small>What would you like to eat today?</small></h1>', unsafe_allow_html=True)
 
 with st.sidebar:
     st.header("🔑 API Keys")
