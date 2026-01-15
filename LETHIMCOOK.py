@@ -5,6 +5,7 @@ import requests
 from typing import List, Dict, Tuple, Set
 import time
 from folium import plugins
+import re
 
 st.set_page_config(page_title="LETHIMCOOK", page_icon="🍽️", layout="wide")
 
@@ -43,6 +44,62 @@ def calculate_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> fl
     a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
     return round(6371 * 2 * asin(sqrt(a)), 2)
 
+def clean_name_for_comparison(name: str) -> str:
+    """Clean restaurant name for duplicate comparison"""
+    if not name:
+        return ""
+    
+    # Convert to lowercase
+    name = name.lower()
+    
+    # Remove common words that don't help with uniqueness
+    remove_words = ['restaurant', 'cafe', 'bistro', 'eatery', 'kitchen', 'food', 'house', 
+                   'bar & grill', 'bar', 'grill', 'diner', 'eats', 'the', 'a', 'an', 
+                   'singapore', 'sg', 'pte', 'ltd', 'co.', '&', 'and']
+    
+    # Remove punctuation and special characters
+    name = re.sub(r'[^\w\s]', ' ', name)
+    
+    # Remove the common words
+    words = name.split()
+    filtered_words = [word for word in words if word not in remove_words]
+    
+    # Sort words to handle different word orders
+    filtered_words.sort()
+    
+    return ' '.join(filtered_words).strip()
+
+def is_food_related_category(cuisine: str) -> bool:
+    """Check if a cuisine/category is actually food-related"""
+    if not cuisine or cuisine == 'N/A':
+        return True  # Keep if unknown
+    
+    cuisine_lower = cuisine.lower()
+    
+    # List of non-food related categories to filter out
+    non_food_keywords = [
+        'mobile', 'phone', 'store', 'shop', 'retail', 'electronic', 'computer',
+        'clothing', 'fashion', 'apparel', 'shoe', 'accessory', 'jewelry',
+        'bank', 'atm', 'financial', 'insurance', 'real estate', 'agency',
+        'hospital', 'clinic', 'medical', 'dentist', 'pharmacy', 'health',
+        'school', 'university', 'college', 'education', 'training',
+        'gas station', 'petrol', 'service station', 'car wash', 'auto',
+        'parking', 'garage', 'lot', 'transportation', 'bus station', 'mrt',
+        'hotel', 'motel', 'hostel', 'lodging', 'accommodation',
+        'museum', 'gallery', 'art', 'theater', 'cinema', 'movie',
+        'gym', 'fitness', 'sports', 'stadium', 'arena', 'pool',
+        'post office', 'mail', 'government', 'embassy', 'consulate',
+        'place of worship', 'church', 'mosque', 'temple', 'synagogue',
+        'beauty', 'salon', 'spa', 'barber', 'hair', 'nail'
+    ]
+    
+    # Check if any non-food keyword is in the cuisine
+    for keyword in non_food_keywords:
+        if keyword in cuisine_lower:
+            return False
+    
+    return True
+
 def search_foursquare(lat: float, lon: float, radius_m: int, search_term: str, api_key: str) -> List[Dict]:
     """Foursquare Places API (Current API) with refined filters."""
     if not api_key or not api_key.strip():
@@ -57,16 +114,18 @@ def search_foursquare(lat: float, lon: float, radius_m: int, search_term: str, a
             "X-Places-Api-Version": "2025-06-17"  # REQUIRED header
         }
 
-        # ========== REFINEMENT 1: SPECIFIC CATEGORY FILTER ==========
-        # A curated list of specific food & drink venue categories for Singapore.
-        # This EXCLUDES broad categories like 'Food Court' (13099) or 'Metro Station' (transport categories).
+        # ========== REFINED CATEGORY FILTER ==========
+        # Curated list of ONLY food & drink categories
+        # Removed ambiguous categories that might include non-food venues
         category_list = (
-            '13065,13145,13314,13236,13066,13068,13070,13071,13072,13073,13076,13077,13079,13080,'
-            '13081,13082,13083,13084,13085,13086,13087,13088,13089,13090,13091,13092,13093,13094,'
-            '13095,13096,13097,13144,13146,13147,13148,13149,13150,13151,13152,13153,13154,13155'
+            '13065,13066,13068,13070,13071,13072,13073,13076,13077,13079,'  # Main restaurant categories
+            '13080,13081,13082,13083,13084,13085,13086,13087,13088,13089,'  # Various cuisine types
+            '13090,13091,13092,13093,13094,13095,13096,13097,'  # More cuisine types
+            '13144,13145,13146,13147,13148,13149,13150,'  # Food & drink shops
+            '13303,13304,13314,13377,13378,13379,13380'  # Specific food types
         )
-        # Categories include: Restaurant, Hawker Centre, Noodle House, Indian Restaurant,
-        # Chinese Restaurant, Japanese Restaurant, etc.
+        # Categories now focused on: Restaurant, Chinese Restaurant, Japanese Restaurant,
+        # Italian Restaurant, Indian Restaurant, Noodle House, Bakery, Coffee Shop, etc.
 
         params = {
             'll': f"{lat},{lon}",
@@ -102,26 +161,48 @@ def search_foursquare(lat: float, lon: float, radius_m: int, search_term: str, a
                 if distance > (radius_m / 1000):
                     continue
 
-                # Get categories and cuisine
+                # Get categories and cuisine - take only PRIMARY category
                 categories = place.get('categories', [])
-                cuisine_list = [cat.get('name', '') for cat in categories]
-                cuisine = ', '.join(cuisine_list) if cuisine_list else 'Restaurant'
+                if categories:
+                    # Use only the primary category (first one)
+                    primary_category = categories[0]
+                    cuisine = primary_category.get('name', 'Restaurant')
+                    
+                    # Skip if not food-related
+                    if not is_food_related_category(cuisine):
+                        continue
+                else:
+                    cuisine = 'Restaurant'
 
                 # Get address
                 location = place.get('location', {})
                 address = location.get('formatted_address', 'N/A')
 
-                # ========== REFINEMENT 2: LOCAL CUISINE/NAME MATCH ==========
-                # Apply an extra filter if the user searched for a specific cuisine/food.
+                # ========== STRONGER FILTERING ==========
+                # Apply multiple filters to ensure relevance
+                skip_venue = False
+                
                 if search_term and search_term.strip():
                     search_lower = search_term.lower()
                     venue_cuisine_lower = cuisine.lower()
                     venue_name_lower = place.get('name', '').lower()
-
-                    # Skip this venue if the search term is NOT found in EITHER its name or its listed cuisine.
-                    # This catches stalls selling different foods under a generic "Food" category.
-                    if (search_lower not in venue_cuisine_lower) and (search_lower not in venue_name_lower):
-                        continue  # This venue is irrelevant to the user's request
+                    
+                    # Check if search term is in name OR cuisine (more flexible)
+                    if (search_lower not in venue_name_lower) and (search_lower not in venue_cuisine_lower):
+                        # Additional check: if cuisine contains common food terms, still include
+                        food_terms = ['restaurant', 'food', 'cafe', 'bistro', 'eatery', 'kitchen', 'dining']
+                        if not any(term in venue_cuisine_lower for term in food_terms):
+                            skip_venue = True
+                
+                # Skip if venue name contains non-food indicators
+                venue_name = place.get('name', '').lower()
+                non_food_indicators = ['mobile', 'phone', 'store', 'shop', 'retail', 'electronic', 
+                                      'bank', 'atm', 'clinic', 'hospital', 'school', 'hotel']
+                if any(indicator in venue_name for indicator in non_food_indicators):
+                    skip_venue = True
+                
+                if skip_venue:
+                    continue
 
                 results.append({
                     'name': place.get('name', 'Unnamed'),
@@ -134,7 +215,8 @@ def search_foursquare(lat: float, lon: float, radius_m: int, search_term: str, a
                     'image_url': '',
                     'is_open': None,
                     'distance': distance,
-                    'source': 'foursquare'
+                    'source': 'foursquare',
+                    'fsq_id': place.get('fsq_place_id', '')  # For better deduplication
                 })
 
         return results
@@ -156,7 +238,7 @@ def search_google(lat: float, lon: float, radius_m: int, search_term: str, api_k
             headers = {
                 'Content-Type': 'application/json',
                 'X-Goog-Api-Key': api_key,
-                'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.priceLevel,places.photos,places.currentOpeningHours'
+                'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.priceLevel,places.photos,places.currentOpeningHours,places.types'
             }
             body = {
                 "textQuery": f"{search_term} restaurant Singapore",
@@ -168,7 +250,7 @@ def search_google(lat: float, lon: float, radius_m: int, search_term: str, api_k
             headers = {
                 'Content-Type': 'application/json',
                 'X-Goog-Api-Key': api_key,
-                'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.priceLevel,places.photos,places.currentOpeningHours'
+                'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.priceLevel,places.photos,places.currentOpeningHours,places.types'
             }
             body = {
                 "includedTypes": ["restaurant"],
@@ -191,24 +273,42 @@ def search_google(lat: float, lon: float, radius_m: int, search_term: str, api_k
                 if distance > (radius_m / 1000):  # radius_m in meters, distance in km
                     continue
                 
+                # Get cuisine from types if available
+                types = place.get('types', [])
+                cuisine = 'Restaurant'
+                if types:
+                    # Filter out non-restaurant types
+                    restaurant_types = [t for t in types if 'restaurant' in t.lower() or 'food' in t.lower()]
+                    if restaurant_types:
+                        # Clean up type names
+                        cuisine = restaurant_types[0].replace('_', ' ').title()
+                
                 price_map = {'PRICE_LEVEL_INEXPENSIVE': '$', 'PRICE_LEVEL_MODERATE': '$$', 'PRICE_LEVEL_EXPENSIVE': '$$$', 'PRICE_LEVEL_VERY_EXPENSIVE': '$$$$'}
                 price = price_map.get(place.get('priceLevel', ''), 'N/A')
                 
                 photos = place.get('photos', [])
                 photo_url = f"https://places.googleapis.com/v1/{photos[0].get('name', '')}/media?key={api_key}&maxHeightPx=400" if photos and photos[0].get('name') else ''
                 
+                # Skip if not food-related based on name
+                venue_name = place.get('displayName', {}).get('text', 'Unnamed').lower()
+                non_food_indicators = ['mobile', 'phone', 'store', 'shop', 'retail', 'electronic', 
+                                      'bank', 'atm', 'clinic', 'hospital', 'school', 'hotel']
+                if any(indicator in venue_name for indicator in non_food_indicators):
+                    continue
+                
                 results.append({
                     'name': place.get('displayName', {}).get('text', 'Unnamed'),
                     'lat': r_lat,
                     'lon': r_lon,
-                    'cuisine': 'Restaurant',
+                    'cuisine': cuisine,
                     'address': place.get('formattedAddress', 'N/A'),
                     'rating': place.get('rating', 'N/A'),
                     'price': price,
                     'image_url': photo_url,
                     'is_open': place.get('currentOpeningHours', {}).get('openNow'),
                     'distance': distance,
-                    'source': 'google'
+                    'source': 'google',
+                    'place_id': place.get('id', '')  # For better deduplication
                 })
         
         return results
@@ -231,6 +331,10 @@ def search_osm(lat: float, lon: float, radius_m: int, search_term: str) -> List[
     (
       node["amenity"="restaurant"]{search_filter}(around:{radius_m},{lat},{lon});
       way["amenity"="restaurant"]{search_filter}(around:{radius_m},{lat},{lon});
+      node["amenity"="fast_food"]{search_filter}(around:{radius_m},{lat},{lon});
+      way["amenity"="fast_food"]{search_filter}(around:{radius_m},{lat},{lon});
+      node["amenity"="cafe"]{search_filter}(around:{radius_m},{lat},{lon});
+      way["amenity"="cafe"]{search_filter}(around:{radius_m},{lat},{lon});
     );
     out center;
     """
@@ -253,6 +357,13 @@ def search_osm(lat: float, lon: float, radius_m: int, search_term: str) -> List[
                 name = tags.get('name', 'Unnamed Restaurant')
                 cuisine = tags.get('cuisine', 'Not specified')
                 description = tags.get('description', '')
+                
+                # Skip if not food-related based on name
+                venue_name_lower = name.lower()
+                non_food_indicators = ['mobile', 'phone', 'store', 'shop', 'retail', 'electronic', 
+                                      'bank', 'atm', 'clinic', 'hospital', 'school', 'hotel']
+                if any(indicator in venue_name_lower for indicator in non_food_indicators):
+                    continue
                 
                 # Additional text filtering if search term provided
                 if search_term and search_term.strip():
@@ -279,6 +390,7 @@ def search_osm(lat: float, lon: float, radius_m: int, search_term: str) -> List[
                     'is_open': None,
                     'distance': distance,
                     'source': 'osm',
+                    'osm_id': el.get('id', ''),  # For better deduplication
                     'phone': tags.get('phone', tags.get('contact:phone', 'N/A')),
                     'website': tags.get('website', tags.get('contact:website', 'N/A')),
                     'opening_hours': tags.get('opening_hours', 'N/A')
@@ -290,14 +402,57 @@ def search_osm(lat: float, lon: float, radius_m: int, search_term: str) -> List[
         return []
 
 def deduplicate(restaurants: List[Dict]) -> List[Dict]:
-    """Remove duplicates based on name and location"""
+    """Remove duplicates based on multiple criteria"""
     seen: Set[str] = set()
     unique = []
     
     for r in restaurants:
-        key = f"{r['name'].lower().strip()}_{round(r['lat'], 4)}_{round(r['lon'], 4)}"
-        if key not in seen:
-            seen.add(key)
+        # Get cleaned name for comparison
+        cleaned_name = clean_name_for_comparison(r['name'])
+        
+        # Create multiple keys for different matching strategies
+        # 1. Exact name + exact coordinates (4 decimal places ~ 11 meters)
+        key_exact = f"{r['name'].lower().strip()}_{round(r['lat'], 4)}_{round(r['lon'], 4)}"
+        
+        # 2. Cleaned name + approximate coordinates (3 decimal places ~ 111 meters)
+        key_approx = f"{cleaned_name}_{round(r['lat'], 3)}_{round(r['lon'], 3)}"
+        
+        # 3. For venues with IDs from their respective APIs
+        id_key = ""
+        if r.get('fsq_id'):
+            id_key = f"fsq_{r['fsq_id']}"
+        elif r.get('place_id'):
+            id_key = f"google_{r['place_id']}"
+        elif r.get('osm_id'):
+            id_key = f"osm_{r['osm_id']}"
+        
+        # Check if this restaurant is a duplicate
+        is_duplicate = False
+        
+        # Check exact match first
+        if key_exact in seen:
+            is_duplicate = True
+        # Check approximate match
+        elif cleaned_name and key_approx in seen:
+            # Additional check: if names are very similar
+            for seen_key in seen:
+                if key_approx in seen_key or (cleaned_name and cleaned_name in seen_key):
+                    is_duplicate = True
+                    break
+        # Check ID match
+        elif id_key and id_key in seen:
+            is_duplicate = True
+        
+        if not is_duplicate:
+            # Add all keys to seen set
+            seen.add(key_exact)
+            if cleaned_name:
+                seen.add(key_approx)
+            if id_key:
+                seen.add(id_key)
+            
+            # Keep the one with the most information
+            # Prefer Foursquare > Google > OSM for data quality
             unique.append(r)
     
     return unique
@@ -336,7 +491,7 @@ def hybrid_search(lat: float, lon: float, radius_m: int, search_term: str, fs_ke
     
     stats['total'] = len(all_results)
     
-    # Deduplicate
+    # Deduplicate with improved logic
     unique_results = deduplicate(all_results)
     stats['duplicates'] = stats['total'] - len(unique_results)
     
@@ -618,4 +773,3 @@ else:
 
     st.markdown("---")
     st.markdown('<div style="text-align:center;color:#666;"><p>Hybrid Multi-API System with Smart Filters</p><p>Foursquare Places API + Google Places + OpenStreetMap</p></p></div>', unsafe_allow_html=True)
-
