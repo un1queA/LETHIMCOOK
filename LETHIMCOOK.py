@@ -395,8 +395,7 @@ with st.sidebar:
     
     st.info("💡 **Use multiple APIs for best results!**")
     
-    fs_key = st.text_input("Foursquare API Key", type="password", 
-                          value="VUKP54231AII5PDZLZRFZ0SBLX5U25FARAWRKSMA1OFO5GYV",
+    fs_key = st.text_input("Foursquare API Key", type="password",
                           help="Use your working Foursquare API key")
     g_key = st.text_input("Google Places API Key", type="password",
                          help="Paid after trial - Good for restaurants")
@@ -420,12 +419,6 @@ with st.sidebar:
                 
                 try:
                     test_response = requests.get(test_url, headers=test_headers, params=test_params, timeout=10)
-                    
-                    st.write("**🔍 DEBUG INFO:**")
-                    st.code(f"Status Code: {test_response.status_code}")
-                    st.code(f"Request URL: {test_url}")
-                    st.code(f"Authorization Header: Bearer {fs_key[:10]}...{fs_key[-10:]}")
-                    st.code(f"Response: {test_response.text[:500]}")
                     
                     if test_response.status_code == 200:
                         st.success("✅ API KEY WORKS! Foursquare is responding correctly!")
