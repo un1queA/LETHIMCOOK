@@ -186,6 +186,9 @@ def calculate_relevance_score(restaurant: Dict, search_term: str = None) -> Dict
     - Higher score = more reliable
     - Scores below 40% are filtered out automatically
     
+    **STRICT FILTERING**: If you search for a specific cuisine (e.g., "sushi"),
+    restaurants that don't match are heavily penalized or filtered out entirely.
+    
     Scoring factors:
     1. Data Quality (40 points max):
        - Has rating? +15 points
@@ -193,11 +196,11 @@ def calculate_relevance_score(restaurant: Dict, search_term: str = None) -> Dict
        - Has address? +10 points
        - Has specific cuisine? +10 points
     
-    2. Search Relevance (20 points max):
-       - Search term in name? +20 points
-       - Search term in cuisine? +15 points
-       - Partial match? +5 points
-       - No match? -20 points
+    2. Search Relevance (35 points max) - **STRICTER NOW**:
+       - Search term in name? +35 points
+       - Search term in cuisine? +30 points
+       - Partial match? +10 points
+       - No match? -50 points (HEAVY PENALTY)
     
     3. API Source Reliability (15 points max):
        - Google: +15 points (strictest filtering)
@@ -209,7 +212,7 @@ def calculate_relevance_score(restaurant: Dict, search_term: str = None) -> Dict
        - Under 1 km: +5 points
     
     5. Suspicious Name Check:
-       - Contains "7-Eleven", "minimart", etc? -30 points
+       - Contains "7-Eleven", "minimart", etc? -40 points
     
     Args:
         restaurant: Restaurant data dictionary
@@ -232,25 +235,68 @@ def calculate_relevance_score(restaurant: Dict, search_term: str = None) -> Dict
     if restaurant.get('cuisine') not in ['N/A', 'Not specified', 'Restaurant']:
         score += 10  # Has specific cuisine type
     
-    # ---- SEARCH TERM RELEVANCE ----
+    # ---- SEARCH TERM RELEVANCE (MUCH STRICTER NOW!) ----
     if search_term and search_term.strip():
-        search_lower = search_term.lower()
+        search_lower = search_term.lower().strip()
         name_lower = restaurant.get('name', '').lower()
         cuisine_lower = restaurant.get('cuisine', '').lower()
         
-        # Exact match in name (e.g., searching "sushi" finds "Sushi Tei")
-        if search_lower in name_lower:
+        # Create search keywords (handle multi-word searches like "sushi buffet")
+        search_keywords = search_lower.split()
+        
+        # Check for exact phrase match first
+        exact_in_name = search_lower in name_lower
+        exact_in_cuisine = search_lower in cuisine_lower
+        
+        # Check for individual keyword matches
+        keywords_in_name = sum(1 for keyword in search_keywords if keyword in name_lower)
+        keywords_in_cuisine = sum(1 for keyword in search_keywords if keyword in cuisine_lower)
+        
+        # ---- SCORING LOGIC ----
+        if exact_in_name:
+            # Perfect: search term in restaurant name (e.g., "Sushi Tei" when searching "sushi")
+            score += 35
+        elif exact_in_cuisine:
+            # Great: search term in cuisine type (e.g., cuisine="Japanese Sushi Restaurant")
+            score += 30
+        elif keywords_in_name >= len(search_keywords):
+            # Good: all keywords in name (e.g., "sushi buffet" → "Buffet Town Sushi Bar")
+            score += 25
+        elif keywords_in_cuisine >= len(search_keywords):
+            # Good: all keywords in cuisine
             score += 20
-        # Exact match in cuisine type
-        elif search_lower in cuisine_lower:
-            score += 15
-        # Partial match (any word matches)
-        elif any(word in name_lower or word in cuisine_lower for word in search_lower.split()):
-            score += 5
+        elif keywords_in_name > 0 or keywords_in_cuisine > 0:
+            # Partial: some keywords match
+            score += 10
+            warnings.append(f"⚠️ Partial match for '{search_term}'")
         else:
-            # No match at all - this is suspicious!
-            score -= 20
-            warnings.append(f"⚠️ '{search_term}' not found in name/cuisine")
+            # BAD: No match at all - this is probably wrong!
+            score -= 50  # HEAVY PENALTY (increased from -20)
+            warnings.append(f"❌ '{search_term}' NOT found in name or cuisine - likely incorrect result")
+        
+        # ---- ADDITIONAL CONTRADICTION CHECK ----
+        # If searching for specific food, check if restaurant serves something completely different
+        cuisine_contradictions = {
+            'sushi': ['indian', 'mexican', 'italian', 'western', 'burger', 'pizza', 'steamboat', 'hotpot', 'bbq'],
+            'pizza': ['chinese', 'japanese', 'sushi', 'korean', 'thai', 'indian', 'steamboat'],
+            'indian': ['japanese', 'sushi', 'chinese', 'korean', 'mexican', 'italian'],
+            'chinese': ['italian', 'mexican', 'indian', 'japanese sushi'],
+            'burger': ['chinese', 'japanese', 'indian', 'thai', 'korean'],
+            'korean': ['italian', 'mexican', 'indian'],
+            'thai': ['italian', 'mexican', 'japanese sushi'],
+            'mexican': ['chinese', 'japanese', 'korean', 'thai', 'indian'],
+            'steamboat': ['pizza', 'burger', 'sushi', 'mexican'],
+            'bbq': ['sushi', 'pizza', 'indian curry']
+        }
+        
+        # Check for contradictions
+        for search_key, incompatible_types in cuisine_contradictions.items():
+            if search_key in search_lower:
+                for incompatible in incompatible_types:
+                    if incompatible in name_lower or incompatible in cuisine_lower:
+                        score -= 40  # Major penalty for contradictory cuisine
+                        warnings.append(f"❌ CONTRADICTION: Searching '{search_term}' but restaurant appears to be {incompatible}")
+                        break
     
     # ---- API SOURCE RELIABILITY ----
     source = restaurant.get('source', 'unknown')
@@ -266,6 +312,7 @@ def calculate_relevance_score(restaurant: Dict, search_term: str = None) -> Dict
         # OSM data is user-contributed, less reliable
         if restaurant.get('cuisine') == 'Not specified':
             warnings.append("⚠️ OSM data: cuisine not specified")
+            score -= 10  # Penalize unknown cuisine when searching
     
     # ---- DISTANCE FACTOR ----
     distance = restaurant.get('distance', 999)
@@ -276,10 +323,10 @@ def calculate_relevance_score(restaurant: Dict, search_term: str = None) -> Dict
     
     # ---- SUSPICIOUS NAME DETECTION ----
     name = restaurant.get('name', '').lower()
-    suspicious_words = ['convenience', 'minimart', '7-eleven', 'cheers', 'fairprice']
+    suspicious_words = ['convenience', 'minimart', '7-eleven', 'cheers', 'fairprice', 'cold storage']
     if any(word in name for word in suspicious_words):
-        score -= 30  # Probably not a restaurant!
-        warnings.append("⚠️ May not be a restaurant")
+        score -= 40  # Probably not a restaurant! (increased from -30)
+        warnings.append("❌ Likely NOT a restaurant (convenience store detected)")
     
     # ---- SET CONFIDENCE LEVEL ----
     if score >= 80:
@@ -847,11 +894,21 @@ def hybrid_search(lat: float, lon: float, radius_m: int, search_term: str, fs_ke
     with st.spinner("📊 Analyzing results..."):
         unique_results = [calculate_relevance_score(r, search_term) for r in unique_results]
     
-    # ---- FILTER OUT LOW-QUALITY RESULTS (NEW!) ----
-    # Remove results with score < 40% (very unreliable)
+    # ---- FILTER OUT LOW-QUALITY RESULTS (STRICTER NOW!) ----
+    # Remove results with score < 50% when searching specific cuisine
+    # Remove results with score < 40% when browsing all restaurants
+    min_score = 50 if (search_term and search_term.strip()) else 40
+    
     before_filter = len(unique_results)
-    unique_results = [r for r in unique_results if r['relevance_score'] >= 40]
+    unique_results = [r for r in unique_results if r['relevance_score'] >= min_score]
     stats['filtered'] = before_filter - len(unique_results)
+    
+    # Additional logging for filtered results (optional - can help debug)
+    if stats['filtered'] > 0:
+        filtered_names = [r['name'] for r in [calculate_relevance_score(r, search_term) for r in deduplicate(all_results)] if r['relevance_score'] < min_score][:5]
+        if filtered_names:
+            # This helps you see what was filtered out - remove if too verbose
+            pass  # st.info(f"Filtered out: {', '.join(filtered_names[:3])}...")
     
     # ---- SORT BY RELEVANCE, THEN DISTANCE ----
     # Higher score = better match, closer = better
@@ -1023,17 +1080,12 @@ with st.sidebar:
         st.rerun()
 
 # ============================================================================
-# SEARCH BUTTON HANDLER (IMPROVED - AUTO-CLEARS!)
+# SEARCH BUTTON HANDLER (FIXED - NO DOUBLE CLICK!)
 # ============================================================================
 if search_btn:
     if not address:
         st.warning("⚠️ Enter a location!")
     else:
-        # **NEW: Auto-clear previous results before new search**
-        st.session_state.searched = False
-        st.session_state.restaurants = []
-        st.session_state.selected_restaurant = None
-        
         # Geocode the address
         with st.spinner("🔍 Finding location..."):
             time.sleep(1)
@@ -1047,7 +1099,7 @@ if search_btn:
             # Perform hybrid search
             restaurants, stats = hybrid_search(lat, lon, radius * 1000, search_term, fs_key, g_key)
             
-            # Save results to session state
+            # Save results to session state (this automatically overwrites old results)
             st.session_state.searched = True
             st.session_state.restaurants = restaurants
             st.session_state.user_lat = lat
@@ -1088,10 +1140,13 @@ if st.session_state.searched:
             
             # **NEW: Reliability explanation**
             st.info("""
-            **🎯 Reliability Indicators:**
-            - **Confidence Level**: Based on data quality and API source
-            - **Relevance Score**: How well the result matches your search
-            - **Warnings**: Potential issues to be aware of
+            **🎯 Reliability & Filtering:**
+            - **Strict Filtering**: When searching specific cuisine (e.g., "sushi"), only results scoring 50%+ are shown
+            - **Contradiction Detection**: Restaurants serving incompatible cuisines are filtered out
+            - **Confidence Level**: Based on data quality, API source, and search match
+            - **Warnings**: Red ❌ warnings indicate likely incorrect results
+            
+            **If results seem wrong:** Try being more specific (e.g., "japanese sushi" instead of just "sushi")
             """, icon="ℹ️")
     
     if st.session_state.restaurants:
