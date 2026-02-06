@@ -2,50 +2,55 @@
 
 [![Streamlit App])](https://lethimcook-duvafpd6cmjx72g9kejply.streamlit.app)
 
-📍 Find Food Near You: Enter any Singapore address or area (like "Orchard Road" or "Chinatown").
+Ever had that feeling of wanting to eat a certain food or cuisine but just know where to look? Look no future, with LETHIMCOOK it will cook up as many food establishments as long as a cuisine/food is given to it.
+The app makes use of google places api, foursquare api to search for food establishments around the area and provides the location of it and how to go there. It specialises in finding hidden gems like hawker stalls or pop up shops. 
 
-🔍 Search by Dish or Cuisine: Look for "chicken rice," "laksa," "Italian," or just browse all nearby restaurants.
+user inputs google places api
+user inputs foursquare api 
+user inputs cuisine/food
+user inputs traveling distance he/she is willing to go
+user inputs current location
 
-🗺️ See It on a Map: Your location and all suggested restaurants are pinned on an interactive OpenStreetMap.
-
-🤝 Interactive List & Map: Click a restaurant in the list to highlight it on the map. Click a pin on the map to jump that restaurant to the top of the list.
-
-🧭 Get Directions Instantly: Hit the "Directions" button for any restaurant, and it opens Google Maps with the route already set from your searched location.
-
-🛠️ Hybrid API Magic: It doesn't rely on just one source. It smartly combines results from:
-
-Google Places API (for mainstream spots and dish-specific searches).
-
-Foursquare Places API v3 (great for finding hawker centres and local coffee shops).
-
-OpenStreetMap (always-on, free fallback for broad coverage).
+i want foursquare to search for all food establishments in a given radius. thats it. but i realised that foursquare is at its most accurate when searching for smaller spots like 50m. however i want the app to be able to search for radiuses of up to 10km. you have recommended a hierarchical search strategy is the most practical and efficient method.(please correct yourself if you think u are wrong) This approach intelligently combines a wide-area scan with targeted, high-resolution searches, making optimal use of your API calls.
+ This code uses a hexagonal grid for efficient area coverage, searches in two phases, and carefully handles duplicates. After all food establishments have been found all of it goes to deepseek. deepseek will handle the results based on user input. Upon looking at the user inputs (food/cuisine user wants to eat), deepseek will search with the given output of foursquare and return the food establishment which matches what the user wants. In return, deepseek should return the establishments name, why it was chosen and where is it located at. 
 
 
-# 🧠 How It Works (Behind the Scenes)
-You type a location. It gets converted to coordinates using Nominatim (OpenStreetMap's geocoder).
+how the foursquare part of the code works:
+Layer 1: Foursquare Search
+Searches within user-defined radius (e.g., 1km)
+Uses hexagonal grid for comprehensive coverage
+Returns all food establishments within the radius
 
-You type a dish or cuisine. The app fires off parallel requests to the APIs you've enabled.
+Layer 2: DeepSeek AI Validation
+Provides detailed validation exactly as you specified:
+📍 Address: #01-27 Whampoa Drive Market & Food Centre (91 Whampoa Drive), 320091
+📌 Coordinates: 1.323623, 103.853746
+🏷️ Categories: Fried Chicken Joint, Halal Restaurant, Malay Restaurant
+🏪 Operational Status: YES
+🎯 Operational Confidence: 9/10
+📋 Address Quality: 10/10
 
-It filters out any places outside your chosen radius, combines the results, and removes duplicates.
+🤖 Reasoning: [detailed explanation]
 
-Everything is displayed on a Folium/OpenStreetMap map and in a sortable sidebar list.
+🗺️ Location Verification: [analysis]
 
-Clicking "Directions" simply opens a pre-filled Google Maps URL with your start and end points.
+Layer 3: OSM Distance Verification
+Checks if the AI-validated venue is actually within the 1km radius
+Uses OSM's accurate coordinates for final distance calculation
+Compares OSM distance with original Foursquare distance
+Only displays venues where OSM confirms they're within the radius
+Provides confidence scores for the verification
 
 
-# Limitations
-This is a proof of concept. Its accuracy is directly tied to the api data from googleplaces, foursquare and openstreetmap.
+google places searches for all food establishments in given radius and matches it with given user inputs both cuisine/food & distance. google places then produces the result (might use ai to crosscheck). the results from google places combines with foursquare api as foursquare can find those little stores unlike google places which is more suitiable for restaurants. get the best results possible
 
-All results are taken from the APIs and sometimes they list coffee shops, food courts, or bakeries as "restaurants."
+cons: might not be accurate, might be outdated as there is not enough data of singapore/no one has collected such data and made it publically accessible/free :( esp for the hawker stalls
 
-Menu Gaps: Just because a place has spaghetti doesn't mean Google or Foursquare's data knows about it. Dish searches are good, but not 100% perfect.
 
-The Paid Stuff: For truly comprehensive, real-time menu data for a specific country like for example Singapore, getting a specific and local APIs from something like Grab or Apify would let you get more accuarte results. However, since this IS a proof of concept and those cost real money, I am sticking to free alternatives for now XD.
 
-OpenStreetMap's Strength: It's fantastic for finding places tagged with a specific cuisine type (like "cuisine":"chinese"), which is why it's a crucial part of our hybrid approach.
 
-# What you would need
-u would need an api from google places and foursquarespaces to run the app at its best potential. It can both be found via these 2 links down below respectively 
+
+
 
 # 🔑 HOW TO GET GOOGLE PLACES API KEY (FREE $200/MONTH):
 Step 1: Create Google Cloud Account (2 min)
