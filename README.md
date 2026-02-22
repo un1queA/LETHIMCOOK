@@ -13,7 +13,7 @@ Secondly, I am only able to rely on AI to validate if the results I get are corr
 
 Lastly, I just cannot seem to get the distance of the food establishment to the users location right. I have tried using haversine, geodesic radius and walking route OSRM while comparing them to google maps and OSM by manually mapping the user's location and the food establishments (not sure if this is how I should compare them) the results are always off. This would result in the app displaying food establishments which are over the given radius. 
 
-Well I have already spent a huge chunk of my time on this project so might as well leave it here and hope that it might be of use to someone out there. I will update if I have the time the project is #NOT fully finished
+Well I have already spent a huge chunk of my time on this project so might as well leave it here and hope that it might be of use to someone out there. I will update if I have the time the project is # NOT fully finished
 
 
 user inputs google places api
