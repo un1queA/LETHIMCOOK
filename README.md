@@ -21,9 +21,13 @@ Well I have already spent a huge chunk of my time on this project so might as we
 
 # The IDEAL workflow
 user inputs google places api
+
 user inputs foursquare api 
+
 user inputs cuisine/food
+
 user inputs traveling distance he/she is willing to go
+
 user inputs current location
 
 i want foursquare to search for all food establishments in a given radius. thats it. but i realised that foursquare is at its most accurate when searching for smaller spots like 50m. however i want the app to be able to search for radiuses of up to 10km.  a hierarchical search strategy is the most practical and efficient method. This approach intelligently combines a wide-area scan with targeted, high-resolution searches, making optimal use of your API calls.
