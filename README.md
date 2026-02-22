@@ -7,13 +7,17 @@ The app makes use of google places api, foursquare api to search for food establ
 
 # DISCLAIMER 
 This project is in development hell lol not sure if it is even feasible anymore. 
-Firstly, there is no open source data of all the food establishments so I am forced to use a combination of foursquare + google places + OSM. It would be great if I had access to delivery service apis such as grab, foodpanda but they fall under paid services. Also it would be really cool if I am able to have access to the database of NEA, gov.sg showcasing all the hawker stalls. Currently the only publicly available database of it shows the hawker centres only which is not ideal in finding the individual stalls IN the hawker centres. The link can be found here: https://data.gov.sg/datasets/d_4a086da0a5553be1d89383cd90d07ecd/view. 
+Firstly, there is no open source data of all the food establishments so I am forced to use a combination of foursquare + google places + OSM. It would be great if I had access to delivery service apis such as grab, foodpanda but they fall under paid services. Also it would be really cool if I am able to have access to the database of NEA, gov.sg showcasing all the hawker stalls. Currently the only publicly available database of it shows the hawker centres only which is not ideal in finding the individual stalls IN the hawker centres. The link can be found here : https://data.gov.sg/datasets/d_4a086da0a5553be1d89383cd90d07ecd/view. 
 
 Secondly, I am only able to rely on AI to validate if the results I get are correct. Not sure if there is any other efficient way to go about it please enlighten me or drop me a DM if you have any idea :) Because I am using AI which is often inaccurate in telling me if the food establishment is authenthic or closed due to AI(deepseek) having limited information about singapore's eateries. 
 
-Lastly, I just cannot seem to get the distance of the food establishment to the users location right. I have tried using haversine, geodesic radius and walking route OSRM while comparing them to google maps and OSM by manually mapping the user's location and the food establishments (not sure if this is how I should compare them) the results are always off. This would result in the app displaying food establishments which are over the given radius. 
+Lastly, I just cannot seem to get the distance of the food establishment to the users location right. I have tried using haversine, geodesic radius and walking route OSRM while comparing them to google maps and OSM by manually mapping the user's location and the food establishments (not sure if this is how I should compare them) the results are always off. The possible reason why it is inaccurate for haversine and geodesic is because the calculation is soley based on distance between both coordinates. Both of these calculations are based off a straight line ignoring any building/structure or road found on the actual map.  Not sure why ORSM is inaccurate compared to OSM eventhough it uses OSRM as its primary routing engines but I guess I will find that answer when I get to it. This in turn would result in the app displaying food establishments which are over the given radius. 
 
-Well I have already spent a huge chunk of my time on this project so might as well leave it here and hope that it might be of use to someone out there. I will update if I have the time the project is NOT fully finished
+Adding the final nail to the coffin, the whole process takes forever to load especailly if the radius given is bigger than 5km and the cuisine or food the user input gives is common. 
+
+Well I have already spent a huge chunk of my time on this project so might as well leave it here and hope that it might be of use to someone out there. I will update it if I have the time. This project as of now is NOT fully finished. 
+
+
 
 
 user inputs google places api
