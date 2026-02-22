@@ -5,6 +5,16 @@
 Ever had that feeling of wanting to eat a certain food or cuisine but just know where to look? Look no further, with LETHIMCOOK it'll cook up as many food establishments as long as a cuisine/food is given to it.
 The app makes use of google places api, foursquare api to search for food establishments around the area and provides the location of it and how to go there. It specialises in finding hidden gems like hawker stalls or pop up shops. 
 
+or so I thought. This project is in development hell lol not sure if it is even feasible anymore. 
+Firstly, there is no open source data of all the food establishments so I am forced to use a combination of foursquare + google places + OSM. It would be great if I had access to delivery service apis such as grab, foodpanda but they fall under paid services. Also it would be really cool if I am able to have access to the database of NEA, gov.sg showcasing all the hawker stalls. Currently the only publicly available database of it shows the hawker centres only which is not ideal in finding the individual stalls IN the hawker centres. The link can be found here: https://data.gov.sg/datasets/d_4a086da0a5553be1d89383cd90d07ecd/view. 
+
+Secondly, I am only able to rely on AI to validate if the results I get are correct. Not sure if there is any other efficient way to go about it please enlighten me or drop me a DM if you have any idea :) Because I am using AI which is often inaccurate in telling me if the food establishment is authenthic or closed due to AI(deepseek) having limited information about singapore's eateries. 
+
+Lastly, I just cannot seem to get the distance of the food establishment to the users location right. I have tried using haversine, geodesic radius and walking route OSRM while comparing them to google maps and OSM by manually mapping the user's location and the food establishments (not sure if this is how I should compare them) the results are always off. This would result in the app displaying food establishments which are over the given radius. 
+
+Well I have already spent a huge chunk of my time on this project so might as well leave it here and hope that it might be of use to someone out there. 
+
+
 user inputs google places api
 user inputs foursquare api 
 user inputs cuisine/food
