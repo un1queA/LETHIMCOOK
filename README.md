@@ -64,7 +64,7 @@ cons: might not be accurate, might be outdated as there is not enough data of si
 
 
 # 🔑 HOW TO GET GOOGLE PLACES API KEY (FREE $200/MONTH):
-Step 1: Create Google Cloud Account (2 min)
+Step 1: Create Google Cloud Account 
 
 Go to: https://console.cloud.google.com/
 Sign in with your Google account
@@ -73,7 +73,7 @@ Add billing information (credit card required, but won't be charged within free 
 
 ⚠️ Important: You MUST add a credit card, but Google gives you $200 free credit every month. You won't be charged unless you exceed $200/month.
 
-Step 2: Create a Project (1 min)
+Step 2: Create a Project 
 
 Click the project dropdown (top bar, says "Select a project")
 Click "New Project"
@@ -81,7 +81,7 @@ Name it: "Restaurant Finder"
 Click "Create"
 
 
-Step 3: Enable Places API (1 min)
+Step 3: Enable Places API 
 
 Go to: APIs & Services > Library (left sidebar)
 Search for: "Places API"
@@ -89,7 +89,7 @@ Click on "Places API"
 Click "ENABLE" button
 
 
-Step 4: Create API Key (1 min)
+Step 4: Create API Key 
 
 Go to: APIs & Services > Credentials (left sidebar)
 Click "+ CREATE CREDENTIALS" (top bar)
@@ -97,8 +97,8 @@ Select "API key"
 Copy your API key (looks like: AIzaSyB1x2y3...)
 
 
-# 🔑 HOW TO GET FOURSQUARE API KEY (100% FREE FOREVER):
-Step 1: Sign Up (1 minute)
+# 🔑 HOW TO GET FOURSQUARE API KEY :
+Step 1: Sign Up 
 
 Go to: https://foursquare.com/developers/signup
 Click "Sign up"
@@ -106,21 +106,21 @@ Enter your email and create password
 No credit card required! ✅
 
 
-Step 2: Verify Email (30 seconds)
+Step 2: Verify Email 
 
 Check your email inbox
 Click the verification link
 Log back into Foursquare Developers
 
 
-Step 3: Create Project (1 minute)
+Step 3: Create Project 
 
 Once logged in, click "Create a new project"
 Project name: "Restaurant Finder"
 Click "Create"
 
 
-Step 4: Get API Key (30 seconds)
+Step 4: Get API Key 
 
 Your project opens automatically
 You'll see your API Key displayed
