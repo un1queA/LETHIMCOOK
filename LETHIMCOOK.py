@@ -13,14 +13,19 @@ from typing import List, Dict, Tuple, Optional
 from collections import defaultdict
 from difflib import SequenceMatcher
 
-# -------------------------
-# CONFIG
-# -------------------------
-GOOGLE_API_KEY = "AIzaSyAw47k5gjGWlbMgAI0bQO7Odqo08Sxml08"
-FOURSQUARE_API_KEY = "HNRSUKIGGHSIXCYO0PJL4A3CITBVD4OELT23YX1AZYUCWQC0"
-
 st.set_page_config(layout="wide")
 st.title("🍜 Multi-Source Food Finder (All Cuisines)")
+
+# -------------------------
+# API KEY INPUTS
+# -------------------------
+st.sidebar.header("🔑 API Keys (required)")
+google_api_key = st.sidebar.text_input("Google Places API Key", type="password", help="Get it from Google Cloud Console")
+foursquare_api_key = st.sidebar.text_input("Foursquare Places API Key", type="password", help="Get it from Foursquare Developer Portal")
+
+if not google_api_key or not foursquare_api_key:
+    st.sidebar.warning("Please enter both API keys to enable searching.")
+    st.stop()
 
 # -------------------------
 # CACHE for OSRM distances & reverse geocoding
@@ -93,29 +98,32 @@ def reverse_geocode(lat, lon):
     return "Address not available"
 
 # -------------------------
-# CHECK IF VENUE IS OPEN (2026)
+# CHECK IF VENUE IS OPEN (2026) – with debug
 # -------------------------
 def is_venue_open(venue):
     """Return False if the venue is permanently closed."""
     source = venue.get("source")
+    closed_reason = None
+
     # Google
     if source == "Google":
-        # Google Places API returns `business_status` = "CLOSED_PERMANENTLY"
-        if venue.get("business_status") == "CLOSED_PERMANENTLY":
-            return False
+        status = venue.get("business_status")
+        if status == "CLOSED_PERMANENTLY":
+            closed_reason = "Google: CLOSED_PERMANENTLY"
     # Foursquare
     elif source == "Foursquare":
-        # Foursquare may have `closed` flag or `date_closed`
         if venue.get("closed") is True or venue.get("date_closed") is not None:
-            return False
+            closed_reason = f"Foursquare: closed={venue.get('closed')}, date_closed={venue.get('date_closed')}"
     # OSM
     elif source == "OSM":
-        # OSM tags: `disused:amenity`, `was:amenity`, or `opening_hours` missing
         tags = venue.get("tags", {})
-        if "disused:amenity" in tags or "was:amenity" in tags:
-            return False
-        # If no opening_hours, assume open (conservative)
-    # If no indication, assume open
+        if "disused:amenity" in tags:
+            closed_reason = "OSM: disused:amenity"
+        if "was:amenity" in tags:
+            closed_reason = "OSM: was:amenity"
+
+    if closed_reason:
+        return False
     return True
 
 # -------------------------
@@ -124,11 +132,8 @@ def is_venue_open(venue):
 def normalize_name(name):
     if not isinstance(name, str):
         return ""
-    # Lowercase
     name = name.lower()
-    # Remove punctuation
     name = re.sub(r'[^\w\s]', '', name)
-    # Remove common suffixes like "restaurant", "cafe", "ptd ltd", etc.
     common_suffixes = [
         'restaurant', 'cafe', 'coffee', 'bakery', 'bar', 'pub', 'diner',
         'eatery', 'bistro', 'tavern', 'fast food', 'takeaway', 'deli',
@@ -140,49 +145,39 @@ def normalize_name(name):
         'western', 'pte', 'ltd', 'limited', '&', 'and', 'the', 'at', 'by'
     ]
     words = name.split()
-    # Remove common suffixes if they appear at the end
     while words and words[-1] in common_suffixes:
         words.pop()
-    # Rejoin and collapse multiple spaces
     normalized = ' '.join(words).strip()
     normalized = re.sub(r'\s+', ' ', normalized)
     return normalized
 
 # -------------------------
-# FUZZY NAME MATCH
+# IMPROVED NAME MATCH (contains + fuzzy)
 # -------------------------
-def names_match(name1, name2, threshold=0.8):
-    """Return True if names are similar enough."""
+def names_match(name1, name2, threshold=0.7):
+    """Return True if names are similar enough (containment or fuzzy ratio)."""
     n1 = normalize_name(name1)
     n2 = normalize_name(name2)
     if not n1 or not n2:
         return False
-    # Quick check: if one contains the other
     if n1 in n2 or n2 in n1:
         return True
-    # Fuzzy ratio
     ratio = SequenceMatcher(None, n1, n2).ratio()
     return ratio >= threshold
 
 # -------------------------
 # ADVANCED DEDUPLICATION (clustering by distance + name)
 # -------------------------
-def cluster_and_merge(venues, max_distance_m=100, name_threshold=0.8):
-    """
-    Cluster venues that are within max_distance_m AND have similar names.
-    Merge each cluster into a single record with best address and combined sources.
-    """
+def cluster_and_merge(venues, max_distance_m=150, name_threshold=0.7):
+    """Cluster venues within distance and similar names, merge them."""
     if not venues:
         return []
 
-    # Sort by distance to home (closest first) – helps when merging
     venues_sorted = sorted(venues, key=lambda x: x.get("distance_km", float('inf')))
-
-    clusters = []  # list of lists
+    clusters = []
     for v in venues_sorted:
         matched = False
         for cluster in clusters:
-            # Compare distance to the first venue in the cluster (representative)
             rep = cluster[0]
             d = geodesic((v["lat"], v["lon"]), (rep["lat"], rep["lon"])).meters
             if d <= max_distance_m and names_match(v["name"], rep["name"], name_threshold):
@@ -192,22 +187,17 @@ def cluster_and_merge(venues, max_distance_m=100, name_threshold=0.8):
         if not matched:
             clusters.append([v])
 
-    # Merge each cluster
     merged = []
     for cluster in clusters:
-        # Choose the best venue in cluster (best address, prefer Google/Foursquare)
         best = None
         best_score = -1
         sources = set()
         for v in cluster:
             sources.add(v["source"])
-            # Score: has address > no address, longer address > shorter, source preference
             addr = v.get("address", "")
             score = 0
             if addr and addr != "Address not available":
-                score += len(addr)  # longer is better
-                if addr != "Address not available":
-                    score += 100
+                score += len(addr) + 100
             if v["source"] in ("Foursquare", "Google"):
                 score += 200
             elif v["source"] == "OSM":
@@ -215,17 +205,12 @@ def cluster_and_merge(venues, max_distance_m=100, name_threshold=0.8):
             if score > best_score:
                 best_score = score
                 best = v.copy()
-
         if best:
-            # Ensure address exists
             if best["address"] in (None, "", "Address not available"):
-                # Try reverse geocoding
                 best["address"] = reverse_geocode(best["lat"], best["lon"])
             best["source"] = "+".join(sorted(sources))
-            # Keep the closest distance among cluster members
             best["distance_km"] = min(v["distance_km"] for v in cluster)
             merged.append(best)
-
     return merged
 
 # -------------------------
@@ -250,12 +235,10 @@ def is_food_place(venue):
     if not types:
         return False
     types_lower = [t.lower() for t in types]
-    # First, reject if any type matches blacklist
     for t in types_lower:
         for bad in NON_FOOD_BLACKLIST:
             if bad in t:
                 return False
-    # Then accept if any type matches food indicators
     for t in types_lower:
         for ind in FOOD_INDICATORS:
             if ind in t:
@@ -263,7 +246,7 @@ def is_food_place(venue):
     return False
 
 # -------------------------
-# OSRM CLIENT (unchanged, with caching)
+# OSRM CLIENT (with caching and retries)
 # -------------------------
 class OSRMClient:
     def __init__(self, base_url="https://router.project-osrm.org", profile="foot"):
@@ -396,13 +379,13 @@ def adaptive_grid_spacing(radius_km):
         return 2000
 
 # -------------------------
-# FOURSQUARE GRID SEARCH (unchanged)
+# FOURSQUARE GRID SEARCH (uses user key)
 # -------------------------
 def fetch_foursquare_grid(lat, lon, radius_km):
     url = "https://places-api.foursquare.com/places/search"
     headers = {
         "Accept": "application/json",
-        "Authorization": f"Bearer {FOURSQUARE_API_KEY.strip()}",
+        "Authorization": f"Bearer {foursquare_api_key.strip()}",
         "X-Places-Api-Version": "2025-06-17"
     }
     grid_spacing = adaptive_grid_spacing(radius_km)
@@ -449,7 +432,6 @@ def fetch_foursquare_grid(lat, lon, radius_km):
                 place_lon = place.get("longitude") or place.get("geocodes", {}).get("main", {}).get("longitude")
                 loc = place.get("location", {})
                 address = loc.get("formatted_address", "Address not available")
-                # Store closed flag if available
                 closed = place.get("closed", False)
                 date_closed = place.get("date_closed")
 
@@ -473,7 +455,7 @@ def fetch_foursquare_grid(lat, lon, radius_km):
     return results
 
 # -------------------------
-# GOOGLE PLACES GRID SEARCH (unchanged)
+# GOOGLE PLACES GRID SEARCH (uses user key)
 # -------------------------
 def fetch_google_grid(lat, lon, radius_km):
     url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
@@ -490,7 +472,7 @@ def fetch_google_grid(lat, lon, radius_km):
             "location": f"{plat},{plon}",
             "radius": grid_spacing,
             "type": "restaurant",
-            "key": GOOGLE_API_KEY
+            "key": google_api_key
         }
 
         try:
@@ -539,7 +521,7 @@ def fetch_google_grid(lat, lon, radius_km):
     return results
 
 # -------------------------
-# OPENSTREETMAP (Overpass API) – add tags for open check
+# OPENSTREETMAP (Overpass API) – unchanged, no key needed
 # -------------------------
 def fetch_osm_places(lat, lon, radius_km):
     overpass_url = "https://overpass-api.de/api/interpreter"
@@ -598,7 +580,7 @@ def fetch_osm_places(lat, lon, radius_km):
                     "lon": place_lon,
                     "types": types,
                     "source": "OSM",
-                    "tags": tags  # store tags for closure check
+                    "tags": tags
                 })
             st.success(f"OSM: {len(results)} places found")
             return results
@@ -650,7 +632,18 @@ if st.button("🔍 Search All Sources"):
             st.info(f"Total food places before filters: {len(all_places)}")
 
             # Filter out closed venues
-            open_places = [p for p in all_places if is_venue_open(p)]
+            open_places = []
+            closed_count = 0
+            for p in all_places:
+                if is_venue_open(p):
+                    open_places.append(p)
+                else:
+                    closed_count += 1
+            if closed_count > 0:
+                st.info(f"Removed {closed_count} closed venues")
+            else:
+                st.info("No closed venues found (or closure info missing)")
+
             st.info(f"After removing closed venues: {len(open_places)} places")
 
             # Apply radius filter (straight-line)
@@ -658,7 +651,7 @@ if st.button("🔍 Search All Sources"):
             st.info(f"After radius filter: {len(radius_filtered)} places")
 
             # Advanced deduplication (clustering by distance + name)
-            deduped = cluster_and_merge(radius_filtered, max_distance_m=100, name_threshold=0.8)
+            deduped = cluster_and_merge(radius_filtered, max_distance_m=150, name_threshold=0.7)
             st.info(f"After deduplication: {len(deduped)} places")
 
             # Convert to DataFrame
@@ -700,7 +693,6 @@ if st.session_state.results:
     else:
         st.success(f"✅ {len(df)} unique food establishments within {radius_input} km (walking distance)")
 
-        # Show source breakdown
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Total after filters", len(df))
@@ -711,26 +703,23 @@ if st.session_state.results:
         with col4:
             st.metric("OSM", len(df[df["source"].str.contains("OSM")]))
 
-        # Display table
         display_cols = ["name", "address", "source"]
         if "walking_distance_km" in df.columns:
             display_cols.insert(2, "walking_distance_km")
         st.dataframe(df[display_cols].sort_values("walking_distance_km"),
                      use_container_width=True)
 
-        # Debug expander
         with st.expander("🔍 Debug Info"):
             st.write(f"Foursquare food places: {len(fsq_res)}")
             st.write(f"Google food places: {len(google_res)}")
             st.write(f"OSM food places: {len(osm_res)}")
             st.write(f"After radius & dedupe: {len(df)}")
 
-        # Map
         m = folium.Map(location=coords, zoom_start=14)
         folium.Marker(coords, tooltip="Your Location", icon=folium.Icon(color="red")).add_to(m)
         color_map = {"Foursquare": "blue", "Google": "green", "OSM": "purple"}
         for _, row in df.iterrows():
-            src = row["source"].split("+")[0]  # use first source for color
+            src = row["source"].split("+")[0]
             folium.Marker(
                 [row["lat"], row["lon"]],
                 tooltip=f"{row['name']} ({row['source']})",
