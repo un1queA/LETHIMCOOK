@@ -1,993 +1,739 @@
 import streamlit as st
+import requests
+import pandas as pd
+import math
+import time
+import re
+from geopy.distance import geodesic, distance
+from geopy.geocoders import Nominatim
 import folium
 from streamlit_folium import st_folium
-import requests
-from typing import List, Dict, Tuple, Set
-import time
-from folium import plugins
-import re
-import concurrent.futures
 from datetime import datetime
+from typing import List, Dict, Tuple, Optional
+from collections import defaultdict
+from difflib import SequenceMatcher
 
-st.set_page_config(page_title="LETHIMCOOK", page_icon="🍽️", layout="wide")
+# -------------------------
+# CONFIG
+# -------------------------
+GOOGLE_API_KEY = "AIzaSyAw47k5gjGWlbMgAI0bQO7Odqo08Sxml08"
+FOURSQUARE_API_KEY = "HNRSUKIGGHSIXCYO0PJL4A3CITBVD4OELT23YX1AZYUCWQC0"
 
-# ============================================================================
-# SESSION STATE INITIALIZATION
-# ============================================================================
-# Initialize all session state variables
-default_values = {
-    'searched': False,
-    'restaurants': [],
-    'user_lat': None,
-    'user_lon': None,
-    'display_name': None,
-    'selected_restaurant': None,
-    'api_calls': {'foursquare': 0, 'google': 0, 'osm': 0},
-    'last_search_stats': {},
-    'last_search_term': '',
-    'address': '',
-    'search_term': '',
-    'radius': 3
-}
+st.set_page_config(layout="wide")
+st.title("🍜 Multi-Source Food Finder (All Cuisines)")
 
-for key, default_value in default_values.items():
-    if key not in st.session_state:
-        st.session_state[key] = default_value
+# -------------------------
+# CACHE for OSRM distances & reverse geocoding
+# -------------------------
+if "osrm_cache" not in st.session_state:
+    st.session_state.osrm_cache = {}
+if "reverse_geocode_cache" not in st.session_state:
+    st.session_state.reverse_geocode_cache = {}
 
-# ============================================================================
-# CSS STYLING
-# ============================================================================
-st.markdown("""
-<style>
-.main-header{font-size:2.5rem;color:#FF6B6B;text-align:center;margin-bottom:2rem;}
-.stButton>button{background-color:#FF6B6B;color:white;font-weight:bold;border-radius:10px;padding:0.5rem 2rem;}
-.api-badge{padding:2px 8px;border-radius:4px;font-size:11px;font-weight:bold;margin:2px;display:inline-block;}
-.google{background:#4285F4;color:white;} .foursquare{background:#F94877;color:white;} .osm{background:#7EBC6F;color:white;}
-.restaurant-list {max-height: 600px; overflow-y: auto;}
-.restaurant-list::-webkit-scrollbar {width: 8px;}
-.restaurant-list::-webkit-scrollbar-track {background: #f1f1f1;}
-.restaurant-list::-webkit-scrollbar-thumb {background: #FF6B6B; border-radius: 4px;}
-.expander-header {font-size: 1.1em; font-weight: bold;}
-</style>
-""", unsafe_allow_html=True)
-
-# ============================================================================
-# GEOCODING FUNCTION
-# ============================================================================
-def geocode(address: str) -> Tuple:
-    """Convert address to coordinates using OpenStreetMap"""
-    if not address:
-        return None, None, None
-    
-    url = "https://nominatim.openstreetmap.org/search"
+# -------------------------
+# UTILITIES
+# -------------------------
+def geocode_address(address):
+    geolocator = Nominatim(user_agent="food_finder_app")
     try:
-        r = requests.get(url, params={
-            'q': address, 
-            'format': 'json', 
-            'limit': 1, 
-            'countrycodes': 'sg',
-            'addressdetails': 1
-        }, headers={'User-Agent': 'RestaurantFinderApp/1.0'}, timeout=15)
-        
-        if r.status_code == 200:
-            data = r.json()
-            if data:
-                return (float(data[0]['lat']), float(data[0]['lon']), data[0]['display_name'])
-        return None, None, None
+        location = geolocator.geocode(address)
+        if location:
+            return (location.latitude, location.longitude)
     except Exception as e:
-        st.error(f"Geocoding error: {str(e)[:200]}")
-        return None, None, None
+        st.error(f"Geocoding error: {e}")
+    return None
 
-# ============================================================================
-# DISTANCE CALCULATION
-# ============================================================================
-def calculate_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Calculate distance between two coordinates in kilometers"""
-    from math import radians, cos, sin, asin, sqrt
-    
-    # Convert to radians
-    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
-    
-    # Haversine formula
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
-    c = 2 * asin(sqrt(a))
-    
-    # Earth radius in km
-    return round(6371 * c, 2)
+def haversine_distance(lat1, lon1, lat2, lon2):
+    R = 6371000.0
+    lat1_rad = math.radians(lat1)
+    lat2_rad = math.radians(lat2)
+    lon1_rad = math.radians(lon1)
+    lon2_rad = math.radians(lon2)
+    dlat = lat2_rad - lat1_rad
+    dlon = lon2_rad - lon1_rad
+    a = math.sin(dlat/2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon/2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+    return R * c
 
-# ============================================================================
-# NAME CLEANING
-# ============================================================================
-def clean_name_for_comparison(name: str) -> str:
-    """Clean restaurant name for duplicate detection"""
-    if not name:
+def strict_radius_filter(results, user_coords, radius_km):
+    filtered = []
+    for r in results:
+        lat = r.get("lat")
+        lon = r.get("lon")
+        if lat is None or lon is None:
+            continue
+        try:
+            dist = geodesic(user_coords, (lat, lon)).km
+        except:
+            continue
+        if dist <= radius_km:
+            r["distance_km"] = round(dist, 2)
+            filtered.append(r)
+    return filtered
+
+# -------------------------
+# REVERSE GEOCODING (fill missing addresses)
+# -------------------------
+def reverse_geocode(lat, lon):
+    """Get address from coordinates using Nominatim (with cache)."""
+    key = f"{lat:.6f},{lon:.6f}"
+    if key in st.session_state.reverse_geocode_cache:
+        return st.session_state.reverse_geocode_cache[key]
+
+    geolocator = Nominatim(user_agent="food_finder_app")
+    try:
+        location = geolocator.reverse((lat, lon), exactly_one=True, language='en')
+        if location and location.address:
+            address = location.address
+            st.session_state.reverse_geocode_cache[key] = address
+            return address
+    except Exception as e:
+        st.warning(f"Reverse geocoding failed for {lat},{lon}: {e}")
+    st.session_state.reverse_geocode_cache[key] = "Address not available"
+    return "Address not available"
+
+# -------------------------
+# CHECK IF VENUE IS OPEN (2026)
+# -------------------------
+def is_venue_open(venue):
+    """Return False if the venue is permanently closed."""
+    source = venue.get("source")
+    # Google
+    if source == "Google":
+        # Google Places API returns `business_status` = "CLOSED_PERMANENTLY"
+        if venue.get("business_status") == "CLOSED_PERMANENTLY":
+            return False
+    # Foursquare
+    elif source == "Foursquare":
+        # Foursquare may have `closed` flag or `date_closed`
+        if venue.get("closed") is True or venue.get("date_closed") is not None:
+            return False
+    # OSM
+    elif source == "OSM":
+        # OSM tags: `disused:amenity`, `was:amenity`, or `opening_hours` missing
+        tags = venue.get("tags", {})
+        if "disused:amenity" in tags or "was:amenity" in tags:
+            return False
+        # If no opening_hours, assume open (conservative)
+    # If no indication, assume open
+    return True
+
+# -------------------------
+# NORMALIZE NAME for comparison
+# -------------------------
+def normalize_name(name):
+    if not isinstance(name, str):
         return ""
-    
+    # Lowercase
     name = name.lower()
-    remove_words = {'restaurant', 'cafe', 'bistro', 'eatery', 'kitchen', 
-                   'food', 'house', 'bar', 'grill', 'diner', 'eats', 
-                   'the', 'a', 'an', 'singapore', 'sg', 'pte', 'ltd', '&', 'and'}
-    
-    name = re.sub(r'[^\w\s]', ' ', name)
+    # Remove punctuation
+    name = re.sub(r'[^\w\s]', '', name)
+    # Remove common suffixes like "restaurant", "cafe", "ptd ltd", etc.
+    common_suffixes = [
+        'restaurant', 'cafe', 'coffee', 'bakery', 'bar', 'pub', 'diner',
+        'eatery', 'bistro', 'tavern', 'fast food', 'takeaway', 'deli',
+        'buffet', 'food court', 'hawker', 'stall', 'food truck', 'izakaya',
+        'steakhouse', 'pizzeria', 'noodle', 'sushi', 'dessert', 'ice cream',
+        'juice', 'beverage', 'chicken', 'burger', 'pasta', 'rice', 'seafood',
+        'vegetarian', 'vegan', 'halal', 'indian', 'chinese', 'malay',
+        'japanese', 'korean', 'thai', 'vietnamese', 'mexican', 'italian',
+        'western', 'pte', 'ltd', 'limited', '&', 'and', 'the', 'at', 'by'
+    ]
     words = name.split()
-    filtered_words = [word for word in words if word not in remove_words]
-    filtered_words.sort()
-    
-    return ' '.join(filtered_words).strip()
+    # Remove common suffixes if they appear at the end
+    while words and words[-1] in common_suffixes:
+        words.pop()
+    # Rejoin and collapse multiple spaces
+    normalized = ' '.join(words).strip()
+    normalized = re.sub(r'\s+', ' ', normalized)
+    return normalized
 
-# ============================================================================
-# FOOD VALIDATION
-# ============================================================================
-def validate_food_relevance(restaurant_name: str, cuisine: str, search_term: str = None) -> bool:
-    """Validate if restaurant likely serves the searched food"""
-    if not search_term or not search_term.strip():
+# -------------------------
+# FUZZY NAME MATCH
+# -------------------------
+def names_match(name1, name2, threshold=0.8):
+    """Return True if names are similar enough."""
+    n1 = normalize_name(name1)
+    n2 = normalize_name(name2)
+    if not n1 or not n2:
+        return False
+    # Quick check: if one contains the other
+    if n1 in n2 or n2 in n1:
         return True
-    
-    search_term = search_term.lower().strip()
-    name_lower = restaurant_name.lower()
-    cuisine_lower = (cuisine or '').lower()
-    
-    # Common contradictions
-    contradictions = {
-        'sushi': ['fish head', 'steamboat', 'hotpot', 'teochew', 'porridge', 'bak kut teh'],
-        'pizza': ['dim sum', 'nasi lemak', 'chicken rice', 'bakery', 'baker'],
-        'burger': ['dim sum', 'sushi', 'seafood', 'vegetarian'],
-        'spaghetti': ['chinese', 'malay', 'indian', 'thai', 'vietnamese'],
-        'ramen': ['western', 'italian', 'french', 'mexican'],
-        'curry': ['western', 'italian', 'mexican', 'japanese']
-    }
-    
-    # Check for contradictions
-    for food, invalid_terms in contradictions.items():
-        if food in search_term:
-            for term in invalid_terms:
-                if term in name_lower or term in cuisine_lower:
-                    return False
-    
-    # Check if search term appears in name or cuisine
-    if (search_term in name_lower or 
-        search_term in cuisine_lower or
-        any(word in name_lower or word in cuisine_lower for word in search_term.split())):
-        return True
-    
-    # For specific food items, require a match
-    specific_foods = ['sushi', 'pizza', 'burger', 'spaghetti', 'pasta', 'ramen', 
-                     'pho', 'tacos', 'dim sum', 'curry', 'steak']
-    
-    if search_term in specific_foods:
-        return False  # Require explicit match for specific foods
-    
-    return True  # For general cuisines, be more lenient
+    # Fuzzy ratio
+    ratio = SequenceMatcher(None, n1, n2).ratio()
+    return ratio >= threshold
 
-# ============================================================================
-# RELEVANCE SCORING
-# ============================================================================
-def calculate_relevance_score(restaurant: Dict, search_term: str = None) -> Dict:
-    """Calculate relevance score for a restaurant"""
-    score = 50
-    confidence = "Unknown"
-    warnings = []
-    
-    # Data Quality
-    if restaurant.get('rating') and restaurant.get('rating') != 'N/A':
-        score += 15
-    if restaurant.get('price') and restaurant.get('price') != 'N/A':
-        score += 5
-    if restaurant.get('address') and restaurant.get('address') != 'N/A':
-        score += 10
-    if restaurant.get('cuisine') not in ['N/A', 'Not specified', 'Restaurant', '']:
-        score += 10
-    
-    # Food Relevance
-    if search_term and search_term.strip():
-        search_lower = search_term.lower()
-        name_lower = restaurant.get('name', '').lower()
-        cuisine_lower = restaurant.get('cuisine', '').lower()
-        
-        if not validate_food_relevance(restaurant.get('name', ''), 
-                                      restaurant.get('cuisine', ''), 
-                                      search_term):
-            score -= 30
-            warnings.append(f"⚠️ Unlikely to serve {search_term}")
-        elif search_lower in name_lower:
-            score += 25
-        elif search_lower in cuisine_lower:
-            score += 20
-        elif any(word in name_lower or word in cuisine_lower for word in search_lower.split()):
-            score += 10
-        else:
-            score -= 10
-    
-    # API Source
-    source = restaurant.get('source', 'unknown')
-    if source == 'google':
-        score += 20
-        confidence = "High"
-    elif source == 'foursquare':
-        score += 12
-        confidence = "Medium-High"
-    elif source == 'osm':
-        score += 8
-        confidence = "Medium"
-    
-    # Business Status
-    if restaurant.get('business_status') == 'CLOSED_PERMANENTLY':
-        score -= 50
-        warnings.append("🚫 Permanently closed")
-    elif restaurant.get('is_open') == True:
-        score += 5
-    
-    # Distance
-    distance = restaurant.get('distance', 999)
-    if distance < 0.5:
-        score += 10
-    elif distance < 1:
-        score += 5
-    elif distance > 5:
-        score -= 5
-    
-    # Suspicious names
-    name = restaurant.get('name', '').lower()
-    suspicious = ['7-eleven', 'cheers', 'fairprice', 'minimart', 'convenience',
-                 'atm', 'bank', 'clinic', 'hospital', 'school', 'hotel', 'motel']
-    if any(word in name for word in suspicious):
-        score -= 30
-        warnings.append("⚠️ May not be a restaurant")
-    
-    # Confidence level
-    if score >= 85:
-        confidence = "Very High"
-    elif score >= 75:
-        confidence = "High"
-    elif score >= 60:
-        confidence = "Medium"
-    elif score >= 45:
-        confidence = "Low"
+# -------------------------
+# ADVANCED DEDUPLICATION (clustering by distance + name)
+# -------------------------
+def cluster_and_merge(venues, max_distance_m=100, name_threshold=0.8):
+    """
+    Cluster venues that are within max_distance_m AND have similar names.
+    Merge each cluster into a single record with best address and combined sources.
+    """
+    if not venues:
+        return []
+
+    # Sort by distance to home (closest first) – helps when merging
+    venues_sorted = sorted(venues, key=lambda x: x.get("distance_km", float('inf')))
+
+    clusters = []  # list of lists
+    for v in venues_sorted:
+        matched = False
+        for cluster in clusters:
+            # Compare distance to the first venue in the cluster (representative)
+            rep = cluster[0]
+            d = geodesic((v["lat"], v["lon"]), (rep["lat"], rep["lon"])).meters
+            if d <= max_distance_m and names_match(v["name"], rep["name"], name_threshold):
+                cluster.append(v)
+                matched = True
+                break
+        if not matched:
+            clusters.append([v])
+
+    # Merge each cluster
+    merged = []
+    for cluster in clusters:
+        # Choose the best venue in cluster (best address, prefer Google/Foursquare)
+        best = None
+        best_score = -1
+        sources = set()
+        for v in cluster:
+            sources.add(v["source"])
+            # Score: has address > no address, longer address > shorter, source preference
+            addr = v.get("address", "")
+            score = 0
+            if addr and addr != "Address not available":
+                score += len(addr)  # longer is better
+                if addr != "Address not available":
+                    score += 100
+            if v["source"] in ("Foursquare", "Google"):
+                score += 200
+            elif v["source"] == "OSM":
+                score += 100
+            if score > best_score:
+                best_score = score
+                best = v.copy()
+
+        if best:
+            # Ensure address exists
+            if best["address"] in (None, "", "Address not available"):
+                # Try reverse geocoding
+                best["address"] = reverse_geocode(best["lat"], best["lon"])
+            best["source"] = "+".join(sorted(sources))
+            # Keep the closest distance among cluster members
+            best["distance_km"] = min(v["distance_km"] for v in cluster)
+            merged.append(best)
+
+    return merged
+
+# -------------------------
+# FOOD ESTABLISHMENT FILTER (with blacklist)
+# -------------------------
+FOOD_INDICATORS = [
+    'restaurant', 'food', 'cafe', 'coffee', 'bakery',
+    'bar', 'pub', 'diner', 'eatery', 'bistro', 'tavern',
+    'fast food', 'takeaway', 'takeout', 'deli', 'buffet',
+    'food court', 'market', 'hawker', 'stall', 'food truck',
+    'izakaya', 'steakhouse', 'pizzeria', 'noodle', 'sushi',
+    'dessert', 'ice cream', 'juice', 'beverage',
+    'chicken', 'burger', 'pasta', 'rice', 'noodles',
+    'seafood', 'vegetarian', 'vegan', 'halal', 'indian',
+    'chinese', 'malay', 'japanese', 'korean', 'thai',
+    'vietnamese', 'mexican', 'italian', 'western'
+]
+NON_FOOD_BLACKLIST = ['supermarket', 'grocery', 'mart', 'store', 'clinic', 'hospital', 'bank', 'school']
+
+def is_food_place(venue):
+    types = venue.get("types", [])
+    if not types:
+        return False
+    types_lower = [t.lower() for t in types]
+    # First, reject if any type matches blacklist
+    for t in types_lower:
+        for bad in NON_FOOD_BLACKLIST:
+            if bad in t:
+                return False
+    # Then accept if any type matches food indicators
+    for t in types_lower:
+        for ind in FOOD_INDICATORS:
+            if ind in t:
+                return True
+    return False
+
+# -------------------------
+# OSRM CLIENT (unchanged, with caching)
+# -------------------------
+class OSRMClient:
+    def __init__(self, base_url="https://router.project-osrm.org", profile="foot"):
+        self.base_url = base_url
+        self.profile = profile
+        self.last_request = 0
+        self.min_delay = 0.2
+        self.max_retries = 3
+        self.timeout = 30
+
+    def _rate_limit(self):
+        now = time.time()
+        if self.last_request:
+            elapsed = now - self.last_request
+            if elapsed < self.min_delay:
+                time.sleep(self.min_delay - elapsed)
+        self.last_request = time.time()
+
+    def _request_with_retry(self, url, params):
+        for attempt in range(self.max_retries):
+            try:
+                self._rate_limit()
+                resp = requests.get(url, params=params, timeout=self.timeout)
+                if resp.status_code == 200:
+                    return resp
+                elif resp.status_code in (502, 503, 504):
+                    wait = 2 ** attempt
+                    time.sleep(wait)
+                    continue
+                else:
+                    return None
+            except requests.RequestException:
+                if attempt == self.max_retries - 1:
+                    return None
+                time.sleep(2 ** attempt)
+        return None
+
+    def batch_walking_distances_chunked(self, home_lat, home_lon, venues, chunk_size=100):
+        if not venues:
+            return []
+
+        distances = [None] * len(venues)
+        cache_key_base = f"{home_lat:.6f},{home_lon:.6f}"
+        for i, v in enumerate(venues):
+            key = (cache_key_base, f"{v['lat']:.6f},{v['lon']:.6f}")
+            if key in st.session_state.osrm_cache:
+                distances[i] = st.session_state.osrm_cache[key]
+
+        uncached_indices = [i for i, d in enumerate(distances) if d is None]
+        if not uncached_indices:
+            return distances
+
+        uncached_venues = [venues[i] for i in uncached_indices]
+        total_uncached = len(uncached_venues)
+
+        chunk_size = min(chunk_size, 100)
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+
+        for chunk_start in range(0, total_uncached, chunk_size):
+            chunk_end = min(chunk_start + chunk_size, total_uncached)
+            chunk_venues = uncached_venues[chunk_start:chunk_end]
+            status_text.text(f"OSRM: Processing chunk {chunk_start//chunk_size + 1}/{(total_uncached+chunk_size-1)//chunk_size} ({len(chunk_venues)} venues)...")
+
+            coords = [f"{home_lon},{home_lat}"] + [f"{v['lon']},{v['lat']}" for v in chunk_venues]
+            coord_str = ";".join(coords)
+            url = f"{self.base_url}/table/v1/{self.profile}/{coord_str}"
+            params = {
+                "sources": "0",
+                "destinations": ";".join(str(i) for i in range(1, len(coords))),
+                "annotations": "distance"
+            }
+
+            resp = self._request_with_retry(url, params)
+            if resp and resp.status_code == 200:
+                data = resp.json()
+                if data.get("code") == "Ok" and "distances" in data:
+                    chunk_dists = data["distances"][0]
+                    for j, d in enumerate(chunk_dists):
+                        if d is not None:
+                            orig_idx = uncached_indices[chunk_start + j]
+                            distances[orig_idx] = d
+                            key = (cache_key_base, f"{venues[orig_idx]['lat']:.6f},{venues[orig_idx]['lon']:.6f}")
+                            st.session_state.osrm_cache[key] = d
+                else:
+                    st.warning(f"OSRM returned error for chunk: {data.get('code')}")
+            else:
+                st.warning(f"OSRM request failed for chunk (after retries).")
+
+            progress_bar.progress(min((chunk_end) / total_uncached, 1.0))
+
+        status_text.empty()
+        progress_bar.empty()
+        return distances
+
+# -------------------------
+# GRID GENERATION (unchanged)
+# -------------------------
+def generate_hex_grid(center_lat, center_lon, outer_radius_m, grid_spacing_m):
+    d = math.sqrt(3) * grid_spacing_m
+    x_step = d
+    y_step = d * math.sqrt(3) / 2.0
+    max_steps = int(math.ceil(outer_radius_m / d)) + 1
+
+    lat_per_m = 1.0 / 111000.0
+    lng_per_m = 1.0 / (111000.0 * math.cos(math.radians(center_lat)))
+
+    points = []
+    for col in range(-max_steps, max_steps + 1):
+        for row in range(-max_steps, max_steps + 1):
+            x = col * x_step
+            y = row * y_step + (col % 2) * y_step / 2.0
+            if math.sqrt(x**2 + y**2) > outer_radius_m:
+                continue
+            lat = center_lat + y * lat_per_m
+            lon = center_lon + x * lng_per_m
+            points.append((lat, lon))
+    return points
+
+def adaptive_grid_spacing(radius_km):
+    if radius_km <= 1.0:
+        return 400
+    elif radius_km <= 3.0:
+        return 600
+    elif radius_km <= 10.0:
+        return 800
+    elif radius_km <= 20.0:
+        return 1200
     else:
-        confidence = "Very Low"
-    
-    restaurant['relevance_score'] = max(0, min(100, score))
-    restaurant['confidence'] = confidence
-    restaurant['warnings'] = warnings
-    
-    return restaurant
+        return 2000
 
-# ============================================================================
-# API SEARCH FUNCTIONS
-# ============================================================================
-def search_foursquare(lat: float, lon: float, radius_m: int, search_term: str, api_key: str) -> List[Dict]:
-    """Search Foursquare API"""
-    if not api_key or not api_key.strip():
-        return []
-    
-    try:
-        url = "https://api.foursquare.com/v3/places/search"
-        headers = {
-            "Accept": "application/json",
-            "Authorization": f"{api_key.strip()}",
-        }
-        
-        # Restaurant categories
-        categories = "13000,13065,13066,13068,13070,13071,13072,13073,13076,13077,13079,13080"
-        
+# -------------------------
+# FOURSQUARE GRID SEARCH (unchanged)
+# -------------------------
+def fetch_foursquare_grid(lat, lon, radius_km):
+    url = "https://places-api.foursquare.com/places/search"
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {FOURSQUARE_API_KEY.strip()}",
+        "X-Places-Api-Version": "2025-06-17"
+    }
+    grid_spacing = adaptive_grid_spacing(radius_km)
+    grid_points = generate_hex_grid(lat, lon, radius_km*1000, grid_spacing)
+    seen_ids = set()
+    results = []
+    request_count = 0
+    st.info(f"Foursquare: Searching {len(grid_points)} grid points...")
+    progress = st.progress(0)
+
+    for i, (plat, plon) in enumerate(grid_points):
         params = {
-            'll': f"{lat},{lon}",
-            'radius': min(radius_m, 100000),
-            'categories': categories,
-            'limit': 50,
-            'sort': 'DISTANCE'
+            "ll": f"{plat},{plon}",
+            "radius": grid_spacing,
+            "limit": 50,
+            "sort": "DISTANCE",
+            "categories": "13000"
         }
-        
-        if search_term and search_term.strip():
-            params['query'] = search_term
-        
-        response = requests.get(url, headers=headers, params=params, timeout=15)
-        
-        if response.status_code == 200:
-            data = response.json()
-            results = []
-            
-            for place in data.get('results', []):
-                r_lat = place.get('geocodes', {}).get('main', {}).get('latitude')
-                r_lon = place.get('geocodes', {}).get('main', {}).get('longitude')
-                
-                if r_lat and r_lon:
-                    distance = calculate_distance(lat, lon, r_lat, r_lon)
-                    if distance > (radius_m / 1000):
-                        continue
-                    
-                    # Get cuisine
-                    categories = place.get('categories', [])
-                    cuisine = 'Restaurant'
-                    if categories:
-                        cuisine = categories[0].get('name', 'Restaurant')
-                    
-                    # Food relevance check
-                    if search_term and search_term.strip():
-                        if not validate_food_relevance(place.get('name', ''), cuisine, search_term):
-                            continue
-                    
-                    location = place.get('location', {})
-                    address_parts = []
-                    if location.get('formatted_address'):
-                        address_parts.append(location['formatted_address'])
-                    if location.get('locality'):
-                        address_parts.append(location['locality'])
-                    
-                    results.append({
-                        'name': place.get('name', 'Unnamed'),
-                        'lat': r_lat,
-                        'lon': r_lon,
-                        'cuisine': cuisine,
-                        'address': ', '.join(address_parts) if address_parts else 'N/A',
-                        'rating': place.get('rating', 'N/A'),
-                        'price': place.get('price', 'N/A'),
-                        'image_url': '',
-                        'is_open': place.get('hours', {}).get('is_open'),
-                        'distance': distance,
-                        'source': 'foursquare',
-                        'fsq_id': place.get('fsq_id', '')
-                    })
-            
-            return results
-        else:
-            return []
-            
-    except Exception as e:
-        return []
 
-def search_google(lat: float, lon: float, radius_m: int, search_term: str, api_key: str) -> List[Dict]:
-    """Search Google Places API"""
-    if not api_key or not api_key.strip():
-        return []
-    
-    try:
-        # Use Text Search API for better results
-        url = "https://maps.googleapis.com/maps/api/place/textsearch/json"
-        
+        try:
+            time.sleep(0.1)
+            resp = requests.get(url, headers=headers, params=params, timeout=15)
+            request_count += 1
+
+            if i == 0 and resp.status_code != 200:
+                st.error(f"Foursquare API error on first request: HTTP {resp.status_code}")
+                st.error(f"Response: {resp.text[:500]}")
+                st.stop()
+
+            if resp.status_code != 200:
+                st.warning(f"Foursquare HTTP {resp.status_code} at point {i}: {resp.text[:100]}")
+                continue
+
+            data = resp.json()
+            for place in data.get("results", []):
+                place_id = place.get("fsq_place_id") or place.get("fsq_id") or f"{place.get('name')}_{place.get('geocodes',{}).get('main',{}).get('latitude')}"
+                if place_id in seen_ids:
+                    continue
+                seen_ids.add(place_id)
+
+                name = place.get("name", "")
+                categories = [c["name"] for c in place.get("categories", [])]
+                place_lat = place.get("latitude") or place.get("geocodes", {}).get("main", {}).get("latitude")
+                place_lon = place.get("longitude") or place.get("geocodes", {}).get("main", {}).get("longitude")
+                loc = place.get("location", {})
+                address = loc.get("formatted_address", "Address not available")
+                # Store closed flag if available
+                closed = place.get("closed", False)
+                date_closed = place.get("date_closed")
+
+                if place_lat and place_lon:
+                    results.append({
+                        "name": name,
+                        "address": address,
+                        "lat": place_lat,
+                        "lon": place_lon,
+                        "types": categories,
+                        "source": "Foursquare",
+                        "closed": closed,
+                        "date_closed": date_closed
+                    })
+        except Exception as e:
+            st.warning(f"Foursquare grid error at point {i}: {e}")
+
+        progress.progress((i+1)/len(grid_points))
+
+    st.success(f"Foursquare: {len(results)} places found ({request_count} requests)")
+    return results
+
+# -------------------------
+# GOOGLE PLACES GRID SEARCH (unchanged)
+# -------------------------
+def fetch_google_grid(lat, lon, radius_km):
+    url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
+    grid_spacing = adaptive_grid_spacing(radius_km)
+    grid_points = generate_hex_grid(lat, lon, radius_km*1000, grid_spacing)
+    seen_place_ids = set()
+    results = []
+    request_count = 0
+    st.info(f"Google: Searching {len(grid_points)} grid points...")
+    progress = st.progress(0)
+
+    for i, (plat, plon) in enumerate(grid_points):
         params = {
-            'key': api_key.strip(),
-            'location': f"{lat},{lon}",
-            'radius': min(radius_m, 50000),
-            'type': 'restaurant',
-            'language': 'en'
+            "location": f"{plat},{plon}",
+            "radius": grid_spacing,
+            "type": "restaurant",
+            "key": GOOGLE_API_KEY
         }
-        
-        if search_term and search_term.strip():
-            params['query'] = f"{search_term} restaurant"
-        else:
-            params['query'] = 'restaurant'
-        
-        response = requests.get(url, params=params, timeout=15)
-        
-        if response.status_code == 200:
-            data = response.json()
-            results = []
-            
-            for place in data.get('results', []):
-                r_lat = place.get('geometry', {}).get('location', {}).get('lat')
-                r_lon = place.get('geometry', {}).get('location', {}).get('lng')
-                
-                if r_lat and r_lon:
-                    distance = calculate_distance(lat, lon, r_lat, r_lon)
-                    if distance > (radius_m / 1000):
-                        continue
-                    
-                    # Get cuisine from types
-                    types = place.get('types', [])
-                    cuisine = 'Restaurant'
-                    if types:
-                        # Filter restaurant-related types
-                        food_types = [t.replace('_', ' ').title() for t in types 
-                                    if any(keyword in t for keyword in ['restaurant', 'food', 'cafe', 'bar'])]
-                        if food_types:
-                            cuisine = ', '.join(food_types[:2])
-                    
-                    # Food relevance check
-                    if search_term and search_term.strip():
-                        if not validate_food_relevance(place.get('name', ''), cuisine, search_term):
-                            continue
-                    
-                    # Get photo
-                    photo_url = ''
-                    if place.get('photos') and place['photos']:
-                        photo_ref = place['photos'][0].get('photo_reference')
-                        if photo_ref:
-                            photo_url = f"https://maps.googleapis.com/maps/api/place/photo?key={api_key.strip()}&photoreference={photo_ref}&maxwidth=400"
-                    
-                    # Price level
-                    price_level = place.get('price_level')
-                    price = 'N/A'
-                    if price_level is not None:
-                        price_map = {1: '$', 2: '$$', 3: '$$$', 4: '$$$$', 5: '$$$$$'}
-                        price = price_map.get(price_level, 'N/A')
-                    
-                    results.append({
-                        'name': place.get('name', 'Unnamed'),
-                        'lat': r_lat,
-                        'lon': r_lon,
-                        'cuisine': cuisine,
-                        'address': place.get('formatted_address', 'N/A'),
-                        'rating': place.get('rating', 'N/A'),
-                        'price': price,
-                        'image_url': photo_url,
-                        'is_open': place.get('opening_hours', {}).get('open_now'),
-                        'distance': distance,
-                        'source': 'google',
-                        'place_id': place.get('place_id', '')
-                    })
-            
-            return results
-        else:
-            return []
-            
-    except Exception as e:
-        return []
 
-def search_osm(lat: float, lon: float, radius_m: int, search_term: str) -> List[Dict]:
-    """Search OpenStreetMap"""
-    url = "https://overpass-api.de/api/interpreter"
-    
-    # Build query
-    query_parts = []
-    for amenity in ['restaurant', 'fast_food', 'cafe']:
-        query_parts.append(f'node["amenity"="{amenity}"](around:{radius_m},{lat},{lon});')
-        query_parts.append(f'way["amenity"="{amenity}"](around:{radius_m},{lat},{lon});')
-    
+        try:
+            time.sleep(0.1)
+            resp = requests.get(url, params=params, timeout=15)
+            request_count += 1
+
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("status") == "OK":
+                    for place in data.get("results", []):
+                        place_id = place.get("place_id")
+                        if place_id in seen_place_ids:
+                            continue
+                        seen_place_ids.add(place_id)
+
+                        name = place.get("name", "")
+                        types = place.get("types", [])
+                        loc = place.get("geometry", {}).get("location", {})
+                        place_lat = loc.get("lat")
+                        place_lon = loc.get("lng")
+                        address = place.get("vicinity", "Address not available")
+                        business_status = place.get("business_status")
+
+                        if place_lat and place_lon:
+                            results.append({
+                                "name": name,
+                                "address": address,
+                                "lat": place_lat,
+                                "lon": place_lon,
+                                "types": types,
+                                "source": "Google",
+                                "business_status": business_status
+                            })
+                elif data.get("status") == "OVER_QUERY_LIMIT":
+                    st.warning("Google Places API quota exceeded.")
+                    break
+            elif resp.status_code == 429:
+                time.sleep(2)
+        except Exception as e:
+            st.warning(f"Google grid error: {e}")
+
+        progress.progress((i+1)/len(grid_points))
+
+    st.success(f"Google: {len(results)} places found ({request_count} requests)")
+    return results
+
+# -------------------------
+# OPENSTREETMAP (Overpass API) – add tags for open check
+# -------------------------
+def fetch_osm_places(lat, lon, radius_km):
+    overpass_url = "https://overpass-api.de/api/interpreter"
+    radius_m = int(radius_km * 1000)
     query = f"""
-    [out:json][timeout:30];
+    [out:json];
     (
-      {"".join(query_parts)}
+      node["amenity"~"restaurant|cafe|fast_food|food_court|ice_cream|pub|bar|biergarten"](around:{radius_m},{lat},{lon});
+      way["amenity"~"restaurant|cafe|fast_food|food_court|ice_cream|pub|bar|biergarten"](around:{radius_m},{lat},{lon});
+      node["shop"~"bakery|confectionery|coffee|tea"](around:{radius_m},{lat},{lon});
+      way["shop"~"bakery|confectionery|coffee|tea"](around:{radius_m},{lat},{lon});
     );
     out center;
     """
-    
     try:
-        response = requests.post(url, data={'data': query}, timeout=30)
-        
-        if response.status_code == 200:
-            data = response.json()
+        st.info("Fetching from OpenStreetMap (Overpass)...")
+        resp = requests.get(overpass_url, params={"data": query}, timeout=60)
+        if resp.status_code == 200:
+            data = resp.json()
             results = []
-            
-            for element in data.get('elements', []):
-                # Get coordinates
-                if element['type'] == 'node':
-                    r_lat = element.get('lat')
-                    r_lon = element.get('lon')
+            for elem in data.get("elements", []):
+                if elem["type"] == "node":
+                    place_lat = elem["lat"]
+                    place_lon = elem["lon"]
                 else:
-                    center = element.get('center', {})
-                    r_lat = center.get('lat')
-                    r_lon = center.get('lon')
-                
-                if r_lat and r_lon:
-                    distance = calculate_distance(lat, lon, r_lat, r_lon)
-                    if distance > (radius_m / 1000):
+                    if "center" in elem:
+                        place_lat = elem["center"]["lat"]
+                        place_lon = elem["center"]["lon"]
+                    else:
                         continue
-                    
-                    tags = element.get('tags', {})
-                    name = tags.get('name', 'Unnamed Restaurant')
-                    cuisine = tags.get('cuisine', 'Not specified')
-                    
-                    # Food relevance check
-                    if search_term and search_term.strip():
-                        if not validate_food_relevance(name, cuisine, search_term):
-                            continue
-                    
-                    # Build address
-                    address_parts = []
-                    if tags.get('addr:street'):
-                        street = tags.get('addr:street', '')
-                        housenumber = tags.get('addr:housenumber', '')
-                        if housenumber:
-                            address_parts.append(f"{housenumber} {street}")
-                        else:
-                            address_parts.append(street)
-                    if tags.get('addr:city'):
-                        address_parts.append(tags['addr:city'])
-                    
-                    results.append({
-                        'name': name,
-                        'lat': r_lat,
-                        'lon': r_lon,
-                        'cuisine': cuisine,
-                        'address': ', '.join(address_parts) if address_parts else 'N/A',
-                        'rating': 'N/A',
-                        'price': 'N/A',
-                        'image_url': '',
-                        'is_open': None,
-                        'distance': distance,
-                        'source': 'osm',
-                        'osm_id': element.get('id', ''),
-                        'phone': tags.get('phone', 'N/A'),
-                        'website': tags.get('website', 'N/A'),
-                        'opening_hours': tags.get('opening_hours', 'N/A')
-                    })
-            
+                tags = elem.get("tags", {})
+                name = tags.get("name", "Unnamed")
+                if not name or name == "Unnamed":
+                    continue
+                address_parts = []
+                if "addr:housenumber" in tags:
+                    address_parts.append(tags["addr:housenumber"])
+                if "addr:street" in tags:
+                    address_parts.append(tags["addr:street"])
+                if "addr:city" in tags:
+                    address_parts.append(tags["addr:city"])
+                if "addr:postcode" in tags:
+                    address_parts.append(tags["addr:postcode"])
+                address = ", ".join(address_parts) if address_parts else "Address not available"
+                types = []
+                if "amenity" in tags:
+                    types.append(tags["amenity"])
+                if "shop" in tags:
+                    types.append(tags["shop"])
+                if "cuisine" in tags:
+                    types.append(tags["cuisine"])
+                results.append({
+                    "name": name,
+                    "address": address,
+                    "lat": place_lat,
+                    "lon": place_lon,
+                    "types": types,
+                    "source": "OSM",
+                    "tags": tags  # store tags for closure check
+                })
+            st.success(f"OSM: {len(results)} places found")
             return results
         else:
+            st.warning(f"Overpass API error: {resp.status_code}")
             return []
-            
     except Exception as e:
+        st.error(f"OSM fetch failed: {e}")
         return []
 
-# ============================================================================
-# DEDUPLICATION
-# ============================================================================
-def deduplicate(restaurants: List[Dict]) -> List[Dict]:
-    """Remove duplicate restaurants"""
-    seen = set()
-    unique = []
-    
-    for r in restaurants:
-        # Create multiple identification keys
-        keys = []
-        
-        # Exact coordinates + name
-        keys.append(f"{round(r['lat'], 5)}_{round(r['lon'], 5)}_{r['name'].lower()}")
-        
-        # Cleaned name + approximate coordinates
-        cleaned_name = clean_name_for_comparison(r['name'])
-        if cleaned_name:
-            keys.append(f"{round(r['lat'], 4)}_{round(r['lon'], 4)}_{cleaned_name}")
-        
-        # API-specific IDs
-        if r.get('fsq_id'):
-            keys.append(f"fsq_{r['fsq_id']}")
-        if r.get('place_id'):
-            keys.append(f"google_{r['place_id']}")
-        if r.get('osm_id'):
-            keys.append(f"osm_{r['osm_id']}")
-        
-        # Check if any key has been seen
-        is_duplicate = False
-        for key in keys:
-            if key in seen:
-                is_duplicate = True
-                break
-        
-        if not is_duplicate:
-            # Add all keys to seen set
-            seen.update(keys)
-            unique.append(r)
-    
-    return unique
-
-# ============================================================================
-# HYBRID SEARCH
-# ============================================================================
-def hybrid_search(lat: float, lon: float, radius_m: int, search_term: str, fs_key: str, g_key: str) -> Tuple[List[Dict], Dict]:
-    """Combine results from all APIs"""
-    all_results = []
-    stats = {'foursquare': 0, 'google': 0, 'osm': 0, 'total': 0, 'duplicates': 0, 'filtered': 0}
-    
-    # Run searches in parallel
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        futures = {}
-        
-        if fs_key and fs_key.strip():
-            futures['foursquare'] = executor.submit(search_foursquare, lat, lon, radius_m, search_term, fs_key)
-        
-        if g_key and g_key.strip():
-            futures['google'] = executor.submit(search_google, lat, lon, radius_m, search_term, g_key)
-        
-        futures['osm'] = executor.submit(search_osm, lat, lon, radius_m, search_term)
-        
-        # Collect results
-        for source, future in futures.items():
-            try:
-                results = future.result(timeout=20)
-                all_results.extend(results)
-                stats[source] = len(results)
-                if source in st.session_state.api_calls:
-                    st.session_state.api_calls[source] += 1
-            except Exception as e:
-                pass
-    
-    stats['total'] = len(all_results)
-    
-    # Deduplicate
-    unique_results = deduplicate(all_results)
-    stats['duplicates'] = stats['total'] - len(unique_results)
-    
-    # Calculate relevance scores
-    unique_results = [calculate_relevance_score(r, search_term) for r in unique_results]
-    
-    # Filter low-quality results
-    before_filter = len(unique_results)
-    unique_results = [r for r in unique_results if r['relevance_score'] >= 40]
-    stats['filtered'] = before_filter - len(unique_results)
-    
-    # Sort by relevance and distance
-    unique_results.sort(key=lambda x: (-x['relevance_score'], x['distance']))
-    
-    return unique_results, stats
-
-# ============================================================================
-# MAP CREATION
-# ============================================================================
-def create_map(user_lat: float, user_lon: float, restaurants: List[Dict], selected: Dict = None) -> folium.Map:
-    """Create interactive map"""
-    # Determine center
-    if selected:
-        center = [selected['lat'], selected['lon']]
-        zoom = 16
-    else:
-        center = [user_lat, user_lon]
-        zoom = 14
-    
-    # Create map
-    m = folium.Map(location=center, zoom_start=zoom, tiles='OpenStreetMap')
-    
-    # Add fullscreen control
-    plugins.Fullscreen(position='topright').add_to(m)
-    
-    # Add user location marker
-    folium.Marker(
-        [user_lat, user_lon],
-        popup="📍 <b>Your Location</b>",
-        tooltip="You are here",
-        icon=folium.Icon(color='blue', icon='home', prefix='fa')
-    ).add_to(m)
-    
-    # Add restaurant markers
-    for r in restaurants:
-        is_selected = selected and r['name'] == selected['name']
-        
-        # Choose icon color
-        if is_selected:
-            icon_color = 'orange'
-            icon_type = 'star'
-            tooltip = f"⭐ {r['name']}"
-        else:
-            icon_color = 'red'
-            icon_type = 'cutlery'
-            tooltip = f"🍽️ {r['name']} ({r['distance']} km)"
-        
-        # Create popup
-        popup_html = f"""
-        <div style="width: 250px;">
-            <h4>{r['name']}</h4>
-            <p><b>Cuisine:</b> {r.get('cuisine', 'N/A')}</p>
-            <p><b>Distance:</b> {r['distance']} km</p>
-            <p><b>Source:</b> {r['source'].upper()}</p>
-            <p style="color: #666; font-size: 0.9em;">
-                Click on map or list to select
-            </p>
-        </div>
-        """
-        
-        # Add marker
-        folium.Marker(
-            [r['lat'], r['lon']],
-            popup=folium.Popup(popup_html, max_width=300),
-            tooltip=tooltip,
-            icon=folium.Icon(color=icon_color, icon=icon_type, prefix='fa')
-        ).add_to(m)
-    
-    # Add route line if restaurant selected
-    if selected:
-        folium.PolyLine(
-            [[user_lat, user_lon], [selected['lat'], selected['lon']]],
-            color='blue',
-            weight=3,
-            opacity=0.7,
-            dash_array='5, 5'
-        ).add_to(m)
-    
-    return m
-
-# ============================================================================
+# -------------------------
 # MAIN APP
-# ============================================================================
+# -------------------------
+address_input = st.text_input("📍 Your location (e.g., Singapore)")
+radius_input = st.slider("📏 Search radius (km)", 1, 50, 5)
 
-# App title
-st.markdown('<h1 class="main-header">🍽️ LETHIMCOOK<br><small>Find restaurants near you</small></h1>', unsafe_allow_html=True)
+if "results" not in st.session_state:
+    st.session_state.results = None
 
-# Sidebar
-with st.sidebar:
-    st.header("🔑 API Configuration")
-    
-    # API keys
-    fs_key = st.text_input("Foursquare API Key", type="password", 
-                          help="Optional but recommended for better results")
-    g_key = st.text_input("Google Places API Key", type="password",
-                         help="Optional but recommended for photos and ratings")
-    
-    st.divider()
-    st.header("🔍 Search Parameters")
-    
-    # Store inputs in session state to preserve them
-    address = st.text_input("📍 Location / Address", 
-                           value=st.session_state.get('address', ''),
-                           placeholder="e.g., Orchard Road, Singapore")
-    
-    search_term = st.text_input("🍜 Cuisine / Food", 
-                               value=st.session_state.get('search_term', ''),
-                               placeholder="e.g., sushi, pizza, spaghetti")
-    
-    radius = st.slider("📏 Search Radius (km)", 1, 10, 
-                      value=st.session_state.get('radius', 3))
-    
-    # Update session state
-    st.session_state.address = address
-    st.session_state.search_term = search_term
-    st.session_state.radius = radius
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        search_clicked = st.button("🔍 Search", type="primary", use_container_width=True)
-    with col2:
-        if st.session_state.searched:
-            if st.button("🗑️ Clear", use_container_width=True):
-                for key in ['searched', 'restaurants', 'selected_restaurant']:
-                    if key in st.session_state:
-                        if key == 'searched':
-                            st.session_state[key] = False
-                        elif key == 'restaurants':
-                            st.session_state[key] = []
-                        else:
-                            st.session_state[key] = None
-                st.rerun()
-
-# Handle search
-if search_clicked:
-    if not address:
-        st.error("⚠️ Please enter a location!")
-        st.stop()
-    
-    # Clear previous selection
-    st.session_state.selected_restaurant = None
-    
-    # Geocode
-    with st.spinner("📍 Finding location..."):
-        lat, lon, display_name = geocode(address)
-    
-    if not lat:
-        st.error("❌ Could not find location. Please try a different address.")
-        st.stop()
-    
-    # Perform search
-    with st.spinner(f"🍽️ Searching for restaurants..."):
-        restaurants, stats = hybrid_search(lat, lon, radius * 1000, search_term, fs_key, g_key)
-    
-    # Update session state
-    st.session_state.searched = True
-    st.session_state.restaurants = restaurants
-    st.session_state.user_lat = lat
-    st.session_state.user_lon = lon
-    st.session_state.display_name = display_name
-    st.session_state.last_search_stats = stats
-    st.session_state.last_search_term = search_term
-    
-    # Show results
-    if restaurants:
-        st.success(f"✅ Found {len(restaurants)} restaurants!")
+if st.button("🔍 Search All Sources"):
+    if not address_input:
+        st.warning("Please enter a location.")
     else:
-        st.warning("No restaurants found. Try adjusting your search criteria.")
-    
-    st.rerun()
-
-# Display results if searched
-if st.session_state.searched and st.session_state.restaurants:
-    # Statistics
-    if st.session_state.last_search_stats:
-        stats = st.session_state.last_search_stats
-        
-        with st.expander("📊 Search Statistics", expanded=False):
-            cols = st.columns(5)
-            with cols[0]:
-                st.metric("Total Found", len(st.session_state.restaurants))
-            with cols[1]:
-                st.metric("Foursquare", stats['foursquare'])
-            with cols[2]:
-                st.metric("Google", stats['google'])
-            with cols[3]:
-                st.metric("OpenStreetMap", stats['osm'])
-            with cols[4]:
-                st.metric("Duplicates", stats['duplicates'])
-            
-            st.caption(f"📍 {st.session_state.display_name}")
-            if st.session_state.last_search_term:
-                st.caption(f"🔍 Searching for: {st.session_state.last_search_term}")
-            st.caption(f"📏 Radius: {st.session_state.radius} km")
-    
-    # Create two columns
-    map_col, list_col = st.columns([2, 1])
-    
-    # Map column
-    with map_col:
-        st.subheader("📍 Map View")
-        
-        if st.session_state.selected_restaurant:
-            selected_name = st.session_state.selected_restaurant['name']
-            st.info(f"⭐ Selected: **{selected_name}**")
+        coords = geocode_address(address_input)
+        if not coords:
+            st.error("Invalid address or geocoding unavailable.")
         else:
-            st.info("💡 Click any restaurant on the map or list to select it")
-        
-        # Create and display map
-        m = create_map(
-            st.session_state.user_lat,
-            st.session_state.user_lon,
-            st.session_state.restaurants,
-            st.session_state.selected_restaurant
-        )
-        
-        map_data = st_folium(m, width=None, height=500, key="map")
-        
-        # Handle map clicks
-        if map_data and map_data.get("last_object_clicked"):
-            clicked_lat = map_data["last_object_clicked"]["lat"]
-            clicked_lon = map_data["last_object_clicked"]["lng"]
-            
-            # Find clicked restaurant
-            for restaurant in st.session_state.restaurants:
-                if (abs(restaurant['lat'] - clicked_lat) < 0.0001 and 
-                    abs(restaurant['lon'] - clicked_lon) < 0.0001):
-                    st.session_state.selected_restaurant = restaurant
-                    st.rerun()
-    
-    # List column
-    with list_col:
-        st.subheader("📋 Restaurants")
-        st.markdown(f"**{len(st.session_state.restaurants)} restaurants found**")
-        
-        # Create sorted list with selected first
-        sorted_restaurants = st.session_state.restaurants.copy()
-        selected = st.session_state.selected_restaurant
-        
-        if selected:
-            # Move selected to front
-            if selected in sorted_restaurants:
-                sorted_restaurants.remove(selected)
-            sorted_restaurants.insert(0, selected)
-        
-        # Display restaurants
-        for idx, restaurant in enumerate(sorted_restaurants, 1):
-            is_selected = (selected and 
-                          restaurant['name'] == selected['name'] and 
-                          restaurant['distance'] == selected['distance'])
-            
-            # Confidence emoji
-            confidence_emoji = {
-                'Very High': '🟢',
-                'High': '🟢',
-                'Medium': '🟡',
-                'Low': '🟠',
-                'Very Low': '🔴',
-                'Unknown': '⚪'
-            }
-            conf_emoji = confidence_emoji.get(restaurant.get('confidence', 'Unknown'), '⚪')
-            
-            # Create expander label
-            if is_selected:
-                label = f"⭐ **{restaurant['name']}** {conf_emoji}"
-            else:
-                score = restaurant.get('relevance_score', 0)
-                label = f"{idx}. {restaurant['name']} {conf_emoji} ({score:.0f}%)"
-            
-            # FIX: Ensure is_selected is a boolean
-            is_selected_bool = bool(is_selected)
-            
-            with st.expander(label, expanded=is_selected_bool):
-                # Confidence and warnings
-                col1, col2 = st.columns([2, 1])
-                with col1:
-                    st.caption(f"**Confidence:** {restaurant.get('confidence', 'Unknown')}")
-                with col2:
-                    st.caption(f"**Score:** {restaurant.get('relevance_score', 0):.0f}%")
-                
-                # Warnings
-                warnings = restaurant.get('warnings', [])
-                for warning in warnings:
-                    if 'PERMANENTLY CLOSED' in warning:
-                        st.error(warning)
-                    elif 'Unlikely' in warning:
-                        st.warning(warning)
+            home_lat, home_lon = coords
+            st.success(f"📍 Home: {home_lat:.6f}, {home_lon:.6f}")
+
+            # Fetch from all three sources
+            with st.spinner("Searching Foursquare..."):
+                fsq_places = fetch_foursquare_grid(home_lat, home_lon, radius_input)
+                fsq_food = [p for p in fsq_places if is_food_place(p)]
+                st.info(f"Foursquare: {len(fsq_food)} food places (out of {len(fsq_places)})")
+
+            with st.spinner("Searching Google..."):
+                google_places = fetch_google_grid(home_lat, home_lon, radius_input)
+                google_food = [p for p in google_places if is_food_place(p)]
+                st.info(f"Google: {len(google_food)} food places (out of {len(google_places)})")
+
+            with st.spinner("Searching OpenStreetMap..."):
+                osm_places = fetch_osm_places(home_lat, home_lon, radius_input)
+                osm_food = [p for p in osm_places if is_food_place(p)]
+                st.info(f"OSM: {len(osm_food)} food places (out of {len(osm_places)})")
+
+            # Combine all food places
+            all_places = fsq_food + google_food + osm_food
+            st.info(f"Total food places before filters: {len(all_places)}")
+
+            # Filter out closed venues
+            open_places = [p for p in all_places if is_venue_open(p)]
+            st.info(f"After removing closed venues: {len(open_places)} places")
+
+            # Apply radius filter (straight-line)
+            radius_filtered = strict_radius_filter(open_places, coords, radius_input)
+            st.info(f"After radius filter: {len(radius_filtered)} places")
+
+            # Advanced deduplication (clustering by distance + name)
+            deduped = cluster_and_merge(radius_filtered, max_distance_m=100, name_threshold=0.8)
+            st.info(f"After deduplication: {len(deduped)} places")
+
+            # Convert to DataFrame
+            final_df = pd.DataFrame(deduped) if deduped else pd.DataFrame()
+
+            # Compute walking distances using OSRM
+            if not final_df.empty:
+                osrm = OSRMClient()
+                venues_list = final_df.to_dict("records")
+                st.info(f"Calculating walking distances for {len(venues_list)} venues...")
+                walking_dists = osrm.batch_walking_distances_chunked(home_lat, home_lon, venues_list, chunk_size=100)
+
+                for i, dist in enumerate(walking_dists):
+                    if dist is not None:
+                        venues_list[i]["walking_distance_m"] = dist
+                        venues_list[i]["walking_distance_km"] = round(dist / 1000, 2)
                     else:
-                        st.info(warning)
-                
-                # API source badge
-                source = restaurant.get('source', 'unknown')
-                st.markdown(f'<span class="api-badge {source}">{source.upper()}</span>', 
-                           unsafe_allow_html=True)
-                
-                # Action buttons
-                btn_col1, btn_col2 = st.columns(2)
-                with btn_col1:
-                    if not is_selected:
-                        if st.button("📍 Select", key=f"select_{idx}", use_container_width=True):
-                            st.session_state.selected_restaurant = restaurant
-                            st.rerun()
-                
-                with btn_col2:
-                    # Google Maps directions
-                    if st.session_state.user_lat and st.session_state.user_lon:
-                        url = f"https://www.google.com/maps/dir/?api=1&origin={st.session_state.user_lat},{st.session_state.user_lon}&destination={restaurant['lat']},{restaurant['lon']}"
-                        st.link_button("🧭 Directions", url, use_container_width=True)
-                
-                # Restaurant details
-                st.write(f"**Cuisine:** {restaurant.get('cuisine', 'N/A')}")
-                st.write(f"**Distance:** {restaurant.get('distance', 'N/A')} km")
-                st.write(f"**Address:** {restaurant.get('address', 'N/A')}")
-                
-                # Rating
-                rating = restaurant.get('rating', 'N/A')
-                if rating != 'N/A':
-                    stars = "⭐" * min(5, int(float(rating)))
-                    st.write(f"**Rating:** {stars} {rating}/5")
-                
-                # Price
-                price = restaurant.get('price', 'N/A')
-                if price != 'N/A':
-                    st.write(f"**Price:** {price}")
-                
-                # Open status
-                is_open = restaurant.get('is_open')
-                if is_open is True:
-                    st.success("● Open Now")
-                elif is_open is False:
-                    st.error("● Closed")
-                
-                # Photo
-                image_url = restaurant.get('image_url')
-                if image_url:
-                    try:
-                        st.image(image_url, use_column_width=True)
-                    except:
-                        pass
-                
-                # Additional info
-                phone = restaurant.get('phone')
-                if phone and phone != 'N/A':
-                    st.write(f"**Phone:** {phone}")
-                
-                website = restaurant.get('website')
-                if website and website != 'N/A':
-                    st.write(f"**Website:** [{website[:50]}...]({website})" if len(website) > 50 else f"**Website:** [Link]({website})")
-                
-                hours = restaurant.get('opening_hours')
-                if hours and hours != 'N/A':
-                    st.write(f"**Hours:** {hours}")
+                        venues_list[i]["walking_distance_m"] = None
+                        venues_list[i]["walking_distance_km"] = venues_list[i]["distance_km"]
 
-elif st.session_state.searched and not st.session_state.restaurants:
-    st.warning("""
-    No restaurants found matching your criteria. Try:
-    - Increasing the search radius
-    - Using a broader search term
-    - Trying a different location
-    - Adding API keys for more comprehensive results
-    """)
+                # Enforce radius again based on walking distance
+                within_radius = [v for v in venues_list if v["walking_distance_km"] <= radius_input]
+                st.info(f"After walking distance filter: {len(within_radius)} places within {radius_input} km")
 
-else:
-    # Welcome screen
-    st.markdown("---")
-    st.markdown("""
-    <div style="text-align:center;color:#666;">
-        <h3>🎯 Welcome to LETHIMCOOK!</h3>
-        <p>Find restaurants serving your favorite food near any location in Singapore.</p>
-        
-        <div style="margin:2rem 0; padding:1.5rem; background:#f8f9fa; border-radius:10px; text-align:left;">
-            <h4>✨ Key Features:</h4>
-            <ul>
-                <li><strong>Smart Search</strong> - Find restaurants by cuisine or specific dishes</li>
-                <li><strong>Multi-API Integration</strong> - Combines Google, Foursquare, and OpenStreetMap</li>
-                <li><strong>Relevance Scoring</strong> - Each result gets a confidence score</li>
-                <li><strong>Interactive Map</strong> - Visualize restaurants on an interactive map</li>
-                <li><strong>One-Click Directions</strong> - Get Google Maps directions instantly</li>
-            </ul>
-            
-            <h4>🚀 Getting Started:</h4>
-            <ol>
-                <li>Enter API keys (optional but recommended)</li>
-                <li>Enter a location or address in Singapore</li>
-                <li>Search for a cuisine or specific food item</li>
-                <li>Set your search radius</li>
-                <li>Click <strong>Search</strong> to find restaurants!</li>
-            </ol>
-        </div>
-        
-        <p><em>Tip: For best results, use all available API keys and be specific with your search terms!</em></p>
-    </div>
-    """, unsafe_allow_html=True)
+                if within_radius:
+                    final_df = pd.DataFrame(within_radius)
+                else:
+                    final_df = pd.DataFrame()
+
+            st.session_state.results = (coords, final_df, fsq_food, google_food, osm_food)
+
+# -------------------------
+# DISPLAY RESULTS
+# -------------------------
+if st.session_state.results:
+    coords, df, fsq_res, google_res, osm_res = st.session_state.results
+    if df.empty:
+        st.warning("No food establishments found within the walking distance radius.")
+    else:
+        st.success(f"✅ {len(df)} unique food establishments within {radius_input} km (walking distance)")
+
+        # Show source breakdown
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total after filters", len(df))
+        with col2:
+            st.metric("Foursquare", len(df[df["source"].str.contains("Foursquare")]))
+        with col3:
+            st.metric("Google", len(df[df["source"].str.contains("Google")]))
+        with col4:
+            st.metric("OSM", len(df[df["source"].str.contains("OSM")]))
+
+        # Display table
+        display_cols = ["name", "address", "source"]
+        if "walking_distance_km" in df.columns:
+            display_cols.insert(2, "walking_distance_km")
+        st.dataframe(df[display_cols].sort_values("walking_distance_km"),
+                     use_container_width=True)
+
+        # Debug expander
+        with st.expander("🔍 Debug Info"):
+            st.write(f"Foursquare food places: {len(fsq_res)}")
+            st.write(f"Google food places: {len(google_res)}")
+            st.write(f"OSM food places: {len(osm_res)}")
+            st.write(f"After radius & dedupe: {len(df)}")
+
+        # Map
+        m = folium.Map(location=coords, zoom_start=14)
+        folium.Marker(coords, tooltip="Your Location", icon=folium.Icon(color="red")).add_to(m)
+        color_map = {"Foursquare": "blue", "Google": "green", "OSM": "purple"}
+        for _, row in df.iterrows():
+            src = row["source"].split("+")[0]  # use first source for color
+            folium.Marker(
+                [row["lat"], row["lon"]],
+                tooltip=f"{row['name']} ({row['source']})",
+                icon=folium.Icon(color=color_map.get(src, "gray"))
+            ).add_to(m)
+        st_folium(m, width=1000, height=600)
