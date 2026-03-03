@@ -17,49 +17,113 @@ st.set_page_config(layout="wide")
 st.title("🍜 Multi-Source Food Finder (All Cuisines)")
 
 # -------------------------
-# API KEY INPUTS
+# USER API KEYS (Sidebar)
 # -------------------------
 st.sidebar.header("🔑 API Keys (required)")
-google_api_key = st.sidebar.text_input("Google Places API Key", type="password", help="Get it from Google Cloud Console")
-foursquare_api_key = st.sidebar.text_input("Foursquare Places API Key", type="password", help="Get it from Foursquare Developer Portal")
+google_api_key = st.sidebar.text_input("Google Places API Key", type="password", help="Get from Google Cloud Console")
+foursquare_api_key = st.sidebar.text_input("Foursquare Places API Key", type="password", help="Get from Foursquare Developer Portal")
 
 if not google_api_key or not foursquare_api_key:
     st.sidebar.warning("Please enter both API keys to enable searching.")
     st.stop()
 
 # -------------------------
-# CACHE for OSRM distances & reverse geocoding
+# CACHES
 # -------------------------
 if "osrm_cache" not in st.session_state:
     st.session_state.osrm_cache = {}
 if "reverse_geocode_cache" not in st.session_state:
     st.session_state.reverse_geocode_cache = {}
+if "geocode_cache" not in st.session_state:
+    st.session_state.geocode_cache = {}
 
 # -------------------------
-# UTILITIES
+# GEOCODING (Google + Nominatim with rate limiting)
 # -------------------------
-def geocode_address(address):
-    geolocator = Nominatim(user_agent="food_finder_app")
+def geocode_address_google(address):
+    """Geocode using Google Maps API."""
+    url = "https://maps.googleapis.com/maps/api/geocode/json"
+    params = {
+        "address": address,
+        "key": google_api_key
+    }
     try:
-        location = geolocator.geocode(address)
-        if location:
-            return (location.latitude, location.longitude)
+        resp = requests.get(url, params=params, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data["status"] == "OK":
+                location = data["results"][0]["geometry"]["location"]
+                return (location["lat"], location["lng"])
+            elif data["status"] == "OVER_QUERY_LIMIT":
+                st.warning("Google Geocoding quota exceeded. Falling back to OpenStreetMap...")
+            else:
+                st.warning(f"Google Geocoding error: {data['status']}")
+        else:
+            st.warning(f"Google Geocoding HTTP error: {resp.status_code}")
     except Exception as e:
-        st.error(f"Geocoding error: {e}")
+        st.warning(f"Google Geocoding exception: {e}")
     return None
 
-def haversine_distance(lat1, lon1, lat2, lon2):
-    R = 6371000.0
-    lat1_rad = math.radians(lat1)
-    lat2_rad = math.radians(lat2)
-    lon1_rad = math.radians(lon1)
-    lon2_rad = math.radians(lon2)
-    dlat = lat2_rad - lat1_rad
-    dlon = lon2_rad - lon1_rad
-    a = math.sin(dlat/2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon/2)**2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-    return R * c
+def geocode_address_nominatim(address, max_retries=3):
+    """Geocode using Nominatim with rate limiting and retries."""
+    geolocator = Nominatim(user_agent="food_finder_app")
+    for attempt in range(max_retries):
+        try:
+            time.sleep(1)  # Nominatim requires at least 1 second between requests
+            location = geolocator.geocode(address, timeout=10)
+            if location:
+                return (location.latitude, location.longitude)
+            else:
+                return None
+        except Exception as e:
+            if "429" in str(e) or "Too Many Requests" in str(e):
+                wait = 2 ** attempt
+                st.warning(f"Rate limited by Nominatim. Retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                st.error(f"Nominatim geocoding error: {e}")
+                return None
+    return None
 
+def geocode_address(address):
+    """Geocode with caching: try Google first, then Nominatim."""
+    cache_key = f"geocode_{address}"
+    if cache_key in st.session_state.geocode_cache:
+        return st.session_state.geocode_cache[cache_key]
+
+    coords = geocode_address_google(address)
+    if not coords:
+        coords = geocode_address_nominatim(address)
+
+    if coords:
+        st.session_state.geocode_cache[cache_key] = coords
+    return coords
+
+# -------------------------
+# REVERSE GEOCODING (fill missing addresses)
+# -------------------------
+def reverse_geocode(lat, lon):
+    """Get address from coordinates using Nominatim (with cache and rate limit)."""
+    key = f"{lat:.6f},{lon:.6f}"
+    if key in st.session_state.reverse_geocode_cache:
+        return st.session_state.reverse_geocode_cache[key]
+
+    geolocator = Nominatim(user_agent="food_finder_app")
+    try:
+        time.sleep(1)  # Rate limit
+        location = geolocator.reverse((lat, lon), exactly_one=True, language='en')
+        if location and location.address:
+            address = location.address
+            st.session_state.reverse_geocode_cache[key] = address
+            return address
+    except Exception as e:
+        st.warning(f"Reverse geocoding failed for {lat},{lon}: {e}")
+    st.session_state.reverse_geocode_cache[key] = "Address not available"
+    return "Address not available"
+
+# -------------------------
+# RADIUS FILTER
+# -------------------------
 def strict_radius_filter(results, user_coords, radius_km):
     filtered = []
     for r in results:
@@ -77,57 +141,22 @@ def strict_radius_filter(results, user_coords, radius_km):
     return filtered
 
 # -------------------------
-# REVERSE GEOCODING (fill missing addresses)
-# -------------------------
-def reverse_geocode(lat, lon):
-    """Get address from coordinates using Nominatim (with cache)."""
-    key = f"{lat:.6f},{lon:.6f}"
-    if key in st.session_state.reverse_geocode_cache:
-        return st.session_state.reverse_geocode_cache[key]
-
-    geolocator = Nominatim(user_agent="food_finder_app")
-    try:
-        location = geolocator.reverse((lat, lon), exactly_one=True, language='en')
-        if location and location.address:
-            address = location.address
-            st.session_state.reverse_geocode_cache[key] = address
-            return address
-    except Exception as e:
-        st.warning(f"Reverse geocoding failed for {lat},{lon}: {e}")
-    st.session_state.reverse_geocode_cache[key] = "Address not available"
-    return "Address not available"
-
-# -------------------------
-# CHECK IF VENUE IS OPEN (2026) – with debug
+# CLOSURE CHECK
 # -------------------------
 def is_venue_open(venue):
-    """Return False if the venue is permanently closed."""
     source = venue.get("source")
-    closed_reason = None
-
-    # Google
-    if source == "Google":
-        status = venue.get("business_status")
-        if status == "CLOSED_PERMANENTLY":
-            closed_reason = "Google: CLOSED_PERMANENTLY"
-    # Foursquare
-    elif source == "Foursquare":
-        if venue.get("closed") is True or venue.get("date_closed") is not None:
-            closed_reason = f"Foursquare: closed={venue.get('closed')}, date_closed={venue.get('date_closed')}"
-    # OSM
-    elif source == "OSM":
-        tags = venue.get("tags", {})
-        if "disused:amenity" in tags:
-            closed_reason = "OSM: disused:amenity"
-        if "was:amenity" in tags:
-            closed_reason = "OSM: was:amenity"
-
-    if closed_reason:
+    if source == "Google" and venue.get("business_status") == "CLOSED_PERMANENTLY":
         return False
+    if source == "Foursquare" and (venue.get("closed") or venue.get("date_closed")):
+        return False
+    if source == "OSM":
+        tags = venue.get("tags", {})
+        if "disused:amenity" in tags or "was:amenity" in tags:
+            return False
     return True
 
 # -------------------------
-# NORMALIZE NAME for comparison
+# NAME NORMALIZATION & MATCHING
 # -------------------------
 def normalize_name(name):
     if not isinstance(name, str):
@@ -151,28 +180,38 @@ def normalize_name(name):
     normalized = re.sub(r'\s+', ' ', normalized)
     return normalized
 
-# -------------------------
-# IMPROVED NAME MATCH (contains + fuzzy)
-# -------------------------
 def names_match(name1, name2, threshold=0.7):
-    """Return True if names are similar enough (containment or fuzzy ratio)."""
     n1 = normalize_name(name1)
     n2 = normalize_name(name2)
     if not n1 or not n2:
         return False
     if n1 in n2 or n2 in n1:
         return True
-    ratio = SequenceMatcher(None, n1, n2).ratio()
-    return ratio >= threshold
+    return SequenceMatcher(None, n1, n2).ratio() >= threshold
 
 # -------------------------
-# ADVANCED DEDUPLICATION (clustering by distance + name)
+# EXTRACT STREET ADDRESS (for deduplication)
+# -------------------------
+def extract_street_address(addr):
+    if not isinstance(addr, str) or addr == "Address not available":
+        return ""
+    addr = addr.lower()
+    addr = re.sub(r'\bblk\s*\d+\b', '', addr, flags=re.IGNORECASE)
+    addr = re.sub(r'#[\d\-/]+', '', addr)
+    addr = re.sub(r'\b\d{6}\b', '', addr)
+    addr = re.sub(r'[^\w\s]', ' ', addr)
+    addr = re.sub(r'\s+', ' ', addr).strip()
+    match = re.search(r'(\d+[a-z]?)\s+([a-z\s]+)', addr)
+    if match:
+        return f"{match.group(1)} {match.group(2).strip()}"
+    return addr
+
+# -------------------------
+# CLUSTER & MERGE (distance + name)
 # -------------------------
 def cluster_and_merge(venues, max_distance_m=150, name_threshold=0.7):
-    """Cluster venues within distance and similar names, merge them."""
     if not venues:
         return []
-
     venues_sorted = sorted(venues, key=lambda x: x.get("distance_km", float('inf')))
     clusters = []
     for v in venues_sorted:
@@ -214,7 +253,44 @@ def cluster_and_merge(venues, max_distance_m=150, name_threshold=0.7):
     return merged
 
 # -------------------------
-# FOOD ESTABLISHMENT FILTER (with blacklist)
+# FINAL ADDRESS‑BASED DEDUPLICATION
+# -------------------------
+def final_address_dedupe(venues):
+    groups = defaultdict(list)
+    for v in venues:
+        street = extract_street_address(v.get("address", ""))
+        if street:
+            groups[street].append(v)
+    deduped = []
+    for street, group in groups.items():
+        if len(group) == 1:
+            deduped.append(group[0])
+        else:
+            best = None
+            best_score = -1
+            sources = set()
+            for v in group:
+                sources.add(v["source"])
+                addr = v.get("address", "")
+                score = 0
+                if addr and addr != "Address not available":
+                    score += len(addr) + 100
+                if v["source"] in ("Foursquare", "Google"):
+                    score += 200
+                elif v["source"] == "OSM":
+                    score += 100
+                if score > best_score:
+                    best_score = score
+                    best = v.copy()
+            if best:
+                best["source"] = "+".join(sorted(sources))
+                best["distance_km"] = min(v["distance_km"] for v in group)
+                deduped.append(best)
+    without_street = [v for v in venues if not extract_street_address(v.get("address", ""))]
+    return deduped + without_street
+
+# -------------------------
+# FOOD PLACE FILTER
 # -------------------------
 FOOD_INDICATORS = [
     'restaurant', 'food', 'cafe', 'coffee', 'bakery',
@@ -343,7 +419,7 @@ class OSRMClient:
         return distances
 
 # -------------------------
-# GRID GENERATION (unchanged)
+# GRID GENERATION
 # -------------------------
 def generate_hex_grid(center_lat, center_lon, outer_radius_m, grid_spacing_m):
     d = math.sqrt(3) * grid_spacing_m
@@ -379,7 +455,7 @@ def adaptive_grid_spacing(radius_km):
         return 2000
 
 # -------------------------
-# FOURSQUARE GRID SEARCH (uses user key)
+# FOURSQUARE GRID SEARCH
 # -------------------------
 def fetch_foursquare_grid(lat, lon, radius_km):
     url = "https://places-api.foursquare.com/places/search"
@@ -455,7 +531,7 @@ def fetch_foursquare_grid(lat, lon, radius_km):
     return results
 
 # -------------------------
-# GOOGLE PLACES GRID SEARCH (uses user key)
+# GOOGLE PLACES GRID SEARCH
 # -------------------------
 def fetch_google_grid(lat, lon, radius_km):
     url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
@@ -521,7 +597,7 @@ def fetch_google_grid(lat, lon, radius_km):
     return results
 
 # -------------------------
-# OPENSTREETMAP (Overpass API) – unchanged, no key needed
+# OPENSTREETMAP (Overpass API)
 # -------------------------
 def fetch_osm_places(lat, lon, radius_km):
     overpass_url = "https://overpass-api.de/api/interpreter"
@@ -606,12 +682,12 @@ if st.button("🔍 Search All Sources"):
     else:
         coords = geocode_address(address_input)
         if not coords:
-            st.error("Invalid address or geocoding unavailable.")
+            st.error("Geocoding failed. Please check the address or try again later.")
         else:
             home_lat, home_lon = coords
             st.success(f"📍 Home: {home_lat:.6f}, {home_lon:.6f}")
 
-            # Fetch from all three sources
+            # Fetch from sources
             with st.spinner("Searching Foursquare..."):
                 fsq_places = fetch_foursquare_grid(home_lat, home_lon, radius_input)
                 fsq_food = [p for p in fsq_places if is_food_place(p)]
@@ -627,59 +703,50 @@ if st.button("🔍 Search All Sources"):
                 osm_food = [p for p in osm_places if is_food_place(p)]
                 st.info(f"OSM: {len(osm_food)} food places (out of {len(osm_places)})")
 
-            # Combine all food places
             all_places = fsq_food + google_food + osm_food
             st.info(f"Total food places before filters: {len(all_places)}")
 
-            # Filter out closed venues
-            open_places = []
-            closed_count = 0
-            for p in all_places:
-                if is_venue_open(p):
-                    open_places.append(p)
-                else:
-                    closed_count += 1
-            if closed_count > 0:
+            # Filter closed venues
+            open_places = [p for p in all_places if is_venue_open(p)]
+            closed_count = len(all_places) - len(open_places)
+            if closed_count:
                 st.info(f"Removed {closed_count} closed venues")
             else:
                 st.info("No closed venues found (or closure info missing)")
 
-            st.info(f"After removing closed venues: {len(open_places)} places")
-
-            # Apply radius filter (straight-line)
+            # Radius filter
             radius_filtered = strict_radius_filter(open_places, coords, radius_input)
             st.info(f"After radius filter: {len(radius_filtered)} places")
 
-            # Advanced deduplication (clustering by distance + name)
+            # First deduplication (distance + name)
             deduped = cluster_and_merge(radius_filtered, max_distance_m=150, name_threshold=0.7)
-            st.info(f"After deduplication: {len(deduped)} places")
+            st.info(f"After name/distance dedupe: {len(deduped)} places")
 
-            # Convert to DataFrame
-            final_df = pd.DataFrame(deduped) if deduped else pd.DataFrame()
+            # Final address‑based deduplication
+            final_venues = final_address_dedupe(deduped)
+            st.info(f"After address dedupe: {len(final_venues)} places")
 
-            # Compute walking distances using OSRM
-            if not final_df.empty:
+            # OSRM walking distances
+            if final_venues:
                 osrm = OSRMClient()
-                venues_list = final_df.to_dict("records")
-                st.info(f"Calculating walking distances for {len(venues_list)} venues...")
-                walking_dists = osrm.batch_walking_distances_chunked(home_lat, home_lon, venues_list, chunk_size=100)
+                st.info(f"Calculating walking distances for {len(final_venues)} venues...")
+                walking_dists = osrm.batch_walking_distances_chunked(home_lat, home_lon, final_venues, chunk_size=100)
 
                 for i, dist in enumerate(walking_dists):
                     if dist is not None:
-                        venues_list[i]["walking_distance_m"] = dist
-                        venues_list[i]["walking_distance_km"] = round(dist / 1000, 2)
+                        final_venues[i]["walking_distance_m"] = dist
+                        final_venues[i]["walking_distance_km"] = round(dist / 1000, 2)
                     else:
-                        venues_list[i]["walking_distance_m"] = None
-                        venues_list[i]["walking_distance_km"] = venues_list[i]["distance_km"]
+                        final_venues[i]["walking_distance_m"] = None
+                        final_venues[i]["walking_distance_km"] = final_venues[i]["distance_km"]
 
-                # Enforce radius again based on walking distance
-                within_radius = [v for v in venues_list if v["walking_distance_km"] <= radius_input]
+                # Final radius filter based on walking distance
+                within_radius = [v for v in final_venues if v["walking_distance_km"] <= radius_input]
                 st.info(f"After walking distance filter: {len(within_radius)} places within {radius_input} km")
 
-                if within_radius:
-                    final_df = pd.DataFrame(within_radius)
-                else:
-                    final_df = pd.DataFrame()
+                final_df = pd.DataFrame(within_radius) if within_radius else pd.DataFrame()
+            else:
+                final_df = pd.DataFrame()
 
             st.session_state.results = (coords, final_df, fsq_food, google_food, osm_food)
 
@@ -706,8 +773,7 @@ if st.session_state.results:
         display_cols = ["name", "address", "source"]
         if "walking_distance_km" in df.columns:
             display_cols.insert(2, "walking_distance_km")
-        st.dataframe(df[display_cols].sort_values("walking_distance_km"),
-                     use_container_width=True)
+        st.dataframe(df[display_cols].sort_values("walking_distance_km"), use_container_width=True)
 
         with st.expander("🔍 Debug Info"):
             st.write(f"Foursquare food places: {len(fsq_res)}")
